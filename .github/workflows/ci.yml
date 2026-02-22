@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-smoke:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+
+    defaults:
+      run:
+        shell: pwsh
+
+    env:
+      DOTNET_NOLOGO: true
+      DOTNET_CLI_TELEMETRY_OPTOUT: true
+      NUGET_PACKAGES: ${{ github.workspace }}/.nuget/packages
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Install Linux build tools
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build g++
+
+      - name: Ensure Ninja on Windows
+        if: runner.os == 'Windows'
+        run: choco install ninja -y --no-progress
+
+      - name: Build Abel
+        run: dotnet build Abel/Abel.csproj -c Release
+
+      - name: Check environment
+        run: dotnet run --project Abel/Abel.csproj -- check --verbose
+
+      - name: Pack tool
+        run: dotnet pack Abel/Abel.csproj -c Release -o artifacts/nupkg
+
+      - name: Install local tool package
+        run: |
+          $version = (Select-String -Path Abel/Abel.csproj -Pattern '<Version>([^<]+)</Version>').Matches[0].Groups[1].Value
+          dotnet tool install Abel.Tool --tool-path ./.tools --add-source artifacts/nupkg --version $version
+
+      - name: CLI smoke test
+        run: |
+          $abel = Join-Path (Resolve-Path ./.tools) 'abel'
+          if ($IsWindows) { $abel = "$abel.exe" }
+
+          & $abel --version
+          & $abel init ci_smoke
+          & $abel add --project ./ci_smoke fmt
+          & $abel build ./ci_smoke
