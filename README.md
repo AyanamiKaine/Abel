@@ -115,6 +115,10 @@ Dependency specs support optional variants:
 
 `abel add` supports typo suggestions and will prompt with `Did you mean ...` when possible.
 
+### Third Party Dependencies
+
+**THIS IS NOT A PACKAGE MANAGER!** It is nothing more as a curated way for SOME library to be added to project as dependencies. See the list to see all currently supported ones.
+
 ## Why Name it Abel?
 
 Because god is testing me with using C++ instead of abandoning it. I just want to be able to say Abel run the shit just works.
