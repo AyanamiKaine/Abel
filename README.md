@@ -1,0 +1,128 @@
+# Abel
+
+Abel is an opinionated C++ build runner on top of CMake + Ninja.
+
+It provides a simple CLI for:
+- initializing new projects
+- adding dependencies (with transitive registry resolution)
+- building and running projects
+- searching curated third-party packages
+
+## Requirements
+
+- .NET SDK 10
+- CMake
+- Ninja
+- C++ toolchain (MSVC/Clang/GCC)
+
+Run:
+
+```powershell
+abel check
+```
+
+to validate your local toolchain.
+
+## Install (from this repo)
+
+```powershell
+dotnet pack Abel/Abel.csproj -c Release -o artifacts/nupkg
+dotnet tool install --global Abel.Tool --add-source artifacts/nupkg --version 0.1.4
+```
+
+If already installed:
+
+```powershell
+dotnet tool update --global Abel.Tool --add-source artifacts/nupkg --version 0.1.4
+```
+
+## Quick Start
+
+Create an executable project:
+
+```powershell
+abel init my_app
+cd my_app
+abel run
+```
+
+Create a module library:
+
+```powershell
+abel init my_module --type module
+cd my_module
+abel build
+```
+
+## Commands
+
+- `abel build [paths...] [--verbose]`
+- `abel run [paths...] [--verbose]`
+- `abel check [--verbose]`
+- `abel list [--verbose]`
+- `abel search <query> [--verbose]`
+- `abel info <package[/variant]> [--verbose]`
+- `abel init <name> [--type exe|module]`
+- `abel init --list-templates`
+- `abel add <dep...> [--project <path>]`
+
+## project.json
+
+Executable:
+
+```json
+{
+  "name": "game",
+  "output_type": "exe",
+  "cxx_standard": 23,
+  "dependencies": ["sdl3", "imgui/sdl3_renderer", "flecs"]
+}
+```
+
+Module library:
+
+```json
+{
+  "name": "math_module",
+  "output_type": "library",
+  "cxx_standard": 23,
+  "sources": {
+    "modules": ["src/math.cppm"],
+    "private": ["src/math_impl.cpp"]
+  },
+  "dependencies": [],
+  "tests": {
+    "files": []
+  }
+}
+```
+
+## Dependency Registry
+
+Registry packages can be discovered with:
+
+```powershell
+abel list
+abel search sdl
+abel info imgui
+```
+
+Dependency specs support optional variants:
+- `imgui` (base package)
+- `imgui/sdl3_renderer` (package variant)
+
+`abel add` supports typo suggestions and will prompt with `Did you mean ...` when possible.
+
+## Build UX
+
+For non-verbose builds, Abel prints step-level progress, including:
+- dependency fetch/build plan
+- CMake file generation
+- configure/build/install phases
+- live activity details during long-running phases
+
+## Repository Layout
+
+- `Abel/` - CLI entrypoint and tool packaging
+- `Abel.Core/` - build engine, CMake generation, registry, tool checks
+- `Example/` - sample Abel projects

@@ -12,6 +12,7 @@ namespace Abel.Core;
 public static class ToolChecker
 {
     public record ToolResult(string Name, bool Found, string? Version, string? Path);
+    private sealed record ToolDescriptor(string Name, string Purpose, bool Required, string? MissingHint = null);
 
     /// <summary>
     /// Runs all checks and prints a summary. Returns true if everything looks good.
@@ -19,8 +20,11 @@ public static class ToolChecker
     public static async Task<bool> CheckAll(bool verbose = false)
     {
         Console.ForegroundColor = ConsoleColor.Cyan;
-        Console.WriteLine("  [check] Checking build tools...");
+        Console.WriteLine("  [check] Verifying Abel build prerequisites...");
         Console.ResetColor();
+        Console.WriteLine("  [why]   Abel needs CMake (configure), Ninja (build), and at least one C++ compiler.");
+
+        var descriptors = BuildToolDescriptors();
 
         var results = new List<ToolResult>
         {
@@ -37,16 +41,25 @@ public static class ToolChecker
         bool allGood = true;
         bool hasCompiler = false;
 
-        foreach (var result in results)
+        foreach (var descriptor in descriptors)
         {
+            var result = results.FirstOrDefault(item =>
+                item.Name.Equals(descriptor.Name, StringComparison.OrdinalIgnoreCase));
+
+            if (result is null)
+                continue;
+
             if (result.Found)
             {
-                if (verbose)
-                {
-                    Console.ForegroundColor = ConsoleColor.Green;
-                    Console.WriteLine($"  [ok]    {result.Name} {result.Version ?? ""} ({result.Path})");
-                    Console.ResetColor();
-                }
+                Console.ForegroundColor = ConsoleColor.Green;
+                Console.WriteLine($"  [ok]    {result.Name} - {descriptor.Purpose}");
+                Console.ResetColor();
+
+                if (!string.IsNullOrWhiteSpace(result.Version))
+                    Console.WriteLine($"         version: {result.Version}");
+
+                if (verbose && !string.IsNullOrWhiteSpace(result.Path))
+                    Console.WriteLine($"         path:    {result.Path}");
 
                 // Track if at least one compiler was found
                 if (IsCompiler(result.Name))
@@ -55,11 +68,20 @@ public static class ToolChecker
             else
             {
                 if (IsCompiler(result.Name))
+                {
+                    Console.ForegroundColor = ConsoleColor.DarkYellow;
+                    Console.WriteLine($"  [miss]  {result.Name} - {descriptor.Purpose}");
+                    Console.ResetColor();
                     continue; // We'll handle missing compilers below as a group
+                }
 
                 Console.ForegroundColor = ConsoleColor.Yellow;
-                Console.WriteLine($"  [warn]  {result.Name} not found on PATH");
+                Console.WriteLine($"  [warn]  {result.Name} missing - {descriptor.Purpose}");
                 Console.ResetColor();
+
+                if (!string.IsNullOrWhiteSpace(descriptor.MissingHint))
+                    Console.WriteLine($"         fix: {descriptor.MissingHint}");
+
                 allGood = false;
             }
         }
@@ -69,21 +91,76 @@ public static class ToolChecker
         {
             Console.ForegroundColor = ConsoleColor.Yellow;
             if (OperatingSystem.IsWindows())
-                Console.WriteLine("  [warn]  No C++ compiler found. Install clang++ (LLVM) or cl.exe (Visual Studio).");
+                Console.WriteLine("  [warn]  No C++ compiler found. Install clang++ (LLVM) or Visual Studio C++ tools (cl.exe).");
             else
                 Console.WriteLine("  [warn]  No C++ compiler found. Install g++ or clang++.");
             Console.ResetColor();
+            Console.WriteLine("         reason: Abel cannot compile C++ targets without a compiler toolchain.");
             allGood = false;
         }
-
-        if (allGood && verbose)
+        else
         {
             Console.ForegroundColor = ConsoleColor.Green;
-            Console.WriteLine("  [check] All tools found.");
+            Console.WriteLine("  [ok]    compiler toolchain - at least one C++ compiler is available.");
+            Console.ResetColor();
+        }
+
+        if (allGood)
+        {
+            Console.ForegroundColor = ConsoleColor.Green;
+            Console.WriteLine("  [check] Environment is ready.");
+            Console.ResetColor();
+        }
+        else if (!verbose)
+        {
+            Console.ForegroundColor = ConsoleColor.Yellow;
+            Console.WriteLine("  [check] Some prerequisites are missing. Run 'abel check --verbose' for paths/details.");
             Console.ResetColor();
         }
 
         return allGood;
+    }
+
+    private static List<ToolDescriptor> BuildToolDescriptors()
+    {
+        var descriptors = new List<ToolDescriptor>
+        {
+            new(
+                Name: "cmake",
+                Purpose: "generates the build graph from CMakeLists.txt",
+                Required: true,
+                MissingHint: "Install CMake and make sure 'cmake' is on PATH."),
+            new(
+                Name: "ninja",
+                Purpose: "build executor used by Abel's generated build files",
+                Required: true,
+                MissingHint: "Install Ninja and make sure 'ninja' is on PATH."),
+        };
+
+        if (OperatingSystem.IsWindows())
+        {
+            descriptors.Add(new(
+                Name: "clang++",
+                Purpose: "C++ compiler option (LLVM)",
+                Required: false));
+            descriptors.Add(new(
+                Name: "cl.exe (MSVC)",
+                Purpose: "C++ compiler option (Visual Studio toolchain)",
+                Required: false));
+        }
+        else
+        {
+            descriptors.Add(new(
+                Name: "g++",
+                Purpose: "C++ compiler option (GNU)",
+                Required: false));
+            descriptors.Add(new(
+                Name: "clang++",
+                Purpose: "C++ compiler option (LLVM/Clang)",
+                Required: false));
+        }
+
+        return descriptors;
     }
 
     /// <summary>
