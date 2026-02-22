@@ -26,6 +26,12 @@ abel check
 
 to validate your local toolchain.
 
+## Install (using dotnet)
+
+```powershell
+  dotnet tool install --global Abel.Tool
+```
+
 ## Install (from this repo)
 
 ```powershell
@@ -139,3 +145,21 @@ For non-verbose builds, Abel prints step-level progress, including:
 - `Abel/` - CLI entrypoint and tool packaging
 - `Abel.Core/` - build engine, CMake generation, registry, tool checks
 - `Example/` - sample Abel projects
+
+## Release Script
+
+Use the release helper to bump the tool version, commit, and create the release tag in one command:
+
+```powershell
+./scripts/release.ps1 0.1.6
+```
+
+Or push commit + tag immediately:
+
+```powershell
+./scripts/release.ps1 0.1.6 -Push
+```
+
+Notes:
+- The script requires a clean git working tree.
+- The release workflow expects a matching git tag: `v<version>`.
