@@ -1,0 +1,12 @@
+{
+	"name": "math_module",
+	"cxx_standard": 23,
+	"sources": {
+		"modules": ["src/math.cppm"],
+		"private": ["src/math_impl.cpp"]
+	},
+	"dependencies": [],
+	"tests": {
+		"files": ["tests/math_module_consumer.cpp"]
+	}
+}

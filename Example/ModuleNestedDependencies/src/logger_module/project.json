@@ -1,0 +1,9 @@
+{
+	"name": "log",
+	"cxx_standard": 23,
+	"sources": {
+		"modules": ["src/log.cppm"],
+		"private": ["src/log_impl.cpp"]
+	},
+	"dependencies": []
+}

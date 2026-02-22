@@ -1,0 +1,6 @@
+{
+	"name": "hello_world",
+	"output_type": "exe",
+	"cxx_standard": 23,
+	"dependencies": ["log"]
+}

@@ -1,0 +1,1 @@
+namespace Abel.Core;

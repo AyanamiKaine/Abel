@@ -1,0 +1,7 @@
+[*.cs]
+
+# MA0004: Use Task.ConfigureAwait
+dotnet_diagnostic.MA0004.severity = none
+
+# CA2007: Consider calling ConfigureAwait on the awaited task
+dotnet_diagnostic.CA2007.severity = none

@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="Abel.Core/Abel.Core.csproj" />
+  <Project Path="Abel/Abel.csproj" />
+</Solution>
