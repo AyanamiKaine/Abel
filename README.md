@@ -3,6 +3,7 @@
 Abel is an opinionated C++ build runner on top of CMake + Ninja.
 
 It provides a simple CLI for:
+
 - initializing new projects
 - adding dependencies (with transitive registry resolution)
 - building and running projects
@@ -72,10 +73,10 @@ Executable:
 
 ```json
 {
-  "name": "game",
-  "output_type": "exe",
-  "cxx_standard": 23,
-  "dependencies": ["sdl3", "imgui/sdl3_renderer", "flecs"]
+	"name": "game",
+	"output_type": "exe",
+	"cxx_standard": 23,
+	"dependencies": ["sdl3", "imgui/sdl3_renderer", "flecs"]
 }
 ```
 
@@ -83,17 +84,17 @@ Module library:
 
 ```json
 {
-  "name": "math_module",
-  "output_type": "library",
-  "cxx_standard": 23,
-  "sources": {
-    "modules": ["src/math.cppm"],
-    "private": ["src/math_impl.cpp"]
-  },
-  "dependencies": [],
-  "tests": {
-    "files": []
-  }
+	"name": "math_module",
+	"output_type": "library",
+	"cxx_standard": 23,
+	"sources": {
+		"modules": ["src/math.cppm"],
+		"private": ["src/math_impl.cpp"]
+	},
+	"dependencies": [],
+	"tests": {
+		"files": []
+	}
 }
 ```
 
@@ -108,14 +109,20 @@ abel info imgui
 ```
 
 Dependency specs support optional variants:
+
 - `imgui` (base package)
 - `imgui/sdl3_renderer` (package variant)
 
 `abel add` supports typo suggestions and will prompt with `Did you mean ...` when possible.
 
+## Why Name it Abel?
+
+Because god is testing me with using C++ instead of abandoning it. I just want to be able to say Abel run the shit just works.
+
 ## Build UX
 
 For non-verbose builds, Abel prints step-level progress, including:
+
 - dependency fetch/build plan
 - CMake file generation
 - configure/build/install phases
