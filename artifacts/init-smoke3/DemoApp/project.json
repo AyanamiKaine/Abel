@@ -1,0 +1,6 @@
+{
+  "name": "DemoApp",
+  "output_type": "exe",
+  "cxx_standard": 23,
+  "dependencies": []
+}

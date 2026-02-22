@@ -31,6 +31,8 @@ public class CmakeBuilder
     // Dependencies
     private readonly List<FindPackageDep> _findPackages = [];
     private readonly List<FetchContentDep> _fetchContents = [];
+    private readonly List<WrapperPackageDep> _wrapperPackages = [];
+    private readonly List<(string Key, string Value)> _cmakeOptions = [];
     private readonly List<string> _linkLibraries = [];
 
     // Testing
@@ -203,6 +205,45 @@ public class CmakeBuilder
     }
 
     /// <summary>
+    /// Emits: set(KEY VALUE CACHE BOOL "")
+    ///
+    /// Sets a CMake cache variable BEFORE FetchContent processes dependencies.
+    /// This is how Abel controls third-party dependency build options
+    /// (for example: SDL_SHARED OFF for static SDL builds).
+    /// </summary>
+    public CmakeBuilder AddCmakeOption(string key, string value)
+    {
+        _cmakeOptions.Add((key, value));
+        return this;
+    }
+
+    public CmakeBuilder AddWrapperPackage(
+        string name,
+        string gitRepo,
+        string gitTag,
+        IEnumerable<string> sources,
+        IEnumerable<string> includeDirs,
+        IEnumerable<string> compileDefinitions,
+        IEnumerable<string> cmakeTargets,
+        IEnumerable<string> linkLibraries,
+        bool interfaceOnly)
+    {
+        _wrapperPackages.Add(
+            new WrapperPackageDep(
+                name,
+                gitRepo,
+                gitTag,
+                [.. sources],
+                [.. includeDirs],
+                [.. compileDefinitions],
+                [.. cmakeTargets],
+                [.. linkLibraries],
+                interfaceOnly));
+
+        return this;
+    }
+
+    /// <summary>
     /// Emits: target_link_libraries(name PRIVATE|PUBLIC dep1 dep2 ...)
     ///
     /// This is the single most important command in modern CMake. Linking a target does NOT just
@@ -291,7 +332,9 @@ public class CmakeBuilder
         var w = new CmakeWriter();
 
         WritePreamble(w);
+        WriteCmakeOptions(w);
         WriteFetchContent(w);
+        WriteWrapperPackages(w);
         WriteFindPackages(w);
         WriteTarget(w);
         WriteSources(w);
@@ -325,7 +368,7 @@ public class CmakeBuilder
     /// Libraries automatically get install/export rules so they can be consumed
     /// by other Abel projects via find_package() after "cmake --install build".
     /// </summary>
-    public static CmakeBuilder FromProjectConfig(ProjectConfig config)
+    public static CmakeBuilder FromProjectConfig(ProjectConfig config, PackageRegistry? registry = null)
     {
         var builder = new CmakeBuilder()
             .SetProject(config.Name)
@@ -342,13 +385,36 @@ public class CmakeBuilder
         if (config.Sources.TryGetValue("public", out var publicHdrs))
             builder.AddPublicHeaders(publicHdrs);
 
-        // Dependencies become find_package calls
-        foreach (var dep in config.Dependencies)
-            builder.AddFindPackage(dep, required: true, configMode: true);
+        var resolvedPackageVariants = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
 
-        // Also link each dependency using namespace convention
-        foreach (var dep in config.Dependencies)
-            builder.AddLinkLibrary($"{dep}::{dep}");
+        foreach (var dependencyText in config.Dependencies)
+        {
+            var dependencySpec = DependencySpec.Parse(dependencyText);
+            var package = registry?.Find(dependencySpec.PackageName);
+
+            if (package is not null && registry is not null)
+            {
+                ResolvePackageTree(
+                    package,
+                    dependencySpec.VariantName,
+                    registry,
+                    builder,
+                    resolvedPackageVariants);
+            }
+            else
+            {
+                if (dependencySpec.VariantName is not null)
+                {
+                    throw new InvalidOperationException(
+                        $"Unknown package '{dependencySpec.PackageName}' in dependency '{dependencyText}'. " +
+                        "Variant syntax is only supported for registry packages.");
+                }
+
+                // Unknown to registry: either local Abel package or system package.
+                builder.AddFindPackage(dependencySpec.PackageName, required: true, configMode: true);
+                builder.AddLinkLibrary($"{dependencySpec.PackageName}::{dependencySpec.PackageName}");
+            }
+        }
 
         // If library, enable install by default
         if (config.ProjectOutputType == OutputType.library)
@@ -378,6 +444,170 @@ public class CmakeBuilder
         return builder;
     }
 
+    private static void ResolvePackageTree(
+        PackageEntry package,
+        string? variantName,
+        PackageRegistry registry,
+        CmakeBuilder builder,
+        Dictionary<string, string?> resolvedPackageVariants)
+    {
+        if (resolvedPackageVariants.TryGetValue(package.Name, out var existingVariant))
+        {
+            if (!string.Equals(existingVariant, variantName, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException(
+                    $"Package '{package.Name}' was requested with multiple variants: " +
+                    $"'{existingVariant ?? "<none>"}' and '{variantName ?? "<none>"}'.");
+            }
+
+            return;
+        }
+
+        var variant = GetVariant(package, variantName);
+        resolvedPackageVariants[package.Name] = variantName;
+
+        var transitiveDependencyNames = MergeDistinctStrings(
+            package.Dependencies,
+            variant?.Dependencies);
+
+        foreach (var transitiveDependencyText in transitiveDependencyNames)
+        {
+            var transitiveSpec = DependencySpec.Parse(transitiveDependencyText);
+            var transitivePackage = registry.Find(transitiveSpec.PackageName);
+
+            if (transitivePackage is null)
+            {
+                throw new InvalidOperationException(
+                    $"Registry package '{package.Name}' depends on '{transitiveDependencyText}', but it is not registered.");
+            }
+
+            ResolvePackageTree(
+                transitivePackage,
+                transitiveSpec.VariantName,
+                registry,
+                builder,
+                resolvedPackageVariants);
+        }
+
+        foreach (var option in package.CmakeOptions)
+            builder.AddCmakeOption(option.Key, option.Value);
+
+        var strategy = package.Strategy.Trim();
+        if (strategy.Equals("fetchcontent", StringComparison.OrdinalIgnoreCase))
+        {
+            builder.AddFetchContent(package.Name, package.GitRepository, package.GitTag);
+        }
+        else if (strategy.Equals("wrapper", StringComparison.OrdinalIgnoreCase))
+        {
+            var sources = MergeDistinctStrings(package.Sources, variant?.Sources);
+            var includeDirs = MergeDistinctStrings(package.IncludeDirs, variant?.IncludeDirs);
+            var compileDefinitions = MergeDistinctStrings(package.CompileDefinitions, variant?.CompileDefinitions);
+            var linkLibraries = CollectTransitiveLinkTargets(transitiveDependencyNames, registry);
+
+            if (sources.Count == 0)
+            {
+                throw new InvalidOperationException(
+                    $"Package '{package.Name}' uses wrapper strategy but does not define sources.");
+            }
+
+            builder.AddWrapperPackage(
+                package.Name,
+                package.GitRepository,
+                package.GitTag,
+                sources,
+                includeDirs,
+                compileDefinitions,
+                package.CmakeTargets,
+                linkLibraries,
+                interfaceOnly: false);
+        }
+        else if (strategy.Equals("header_inject", StringComparison.OrdinalIgnoreCase))
+        {
+            var includeDirs = MergeDistinctStrings(package.IncludeDirs, variant?.IncludeDirs);
+            var compileDefinitions = MergeDistinctStrings(package.CompileDefinitions, variant?.CompileDefinitions);
+            var linkLibraries = CollectTransitiveLinkTargets(transitiveDependencyNames, registry);
+
+            builder.AddWrapperPackage(
+                package.Name,
+                package.GitRepository,
+                package.GitTag,
+                Array.Empty<string>(),
+                includeDirs,
+                compileDefinitions,
+                package.CmakeTargets,
+                linkLibraries,
+                interfaceOnly: true);
+        }
+        else
+        {
+            throw new InvalidOperationException(
+                $"Package '{package.Name}' has unsupported strategy '{package.Strategy}'.");
+        }
+
+        foreach (var cmakeTarget in package.CmakeTargets)
+            builder.AddLinkLibrary(cmakeTarget);
+    }
+
+    private static PackageVariant? GetVariant(PackageEntry package, string? variantName)
+    {
+        if (string.IsNullOrWhiteSpace(variantName))
+            return null;
+
+        if (!package.Variants.TryGetValue(variantName, out var variant))
+        {
+            throw new InvalidOperationException(
+                $"Package '{package.Name}' does not define variant '{variantName}'.");
+        }
+
+        return variant;
+    }
+
+    private static List<string> MergeDistinctStrings(
+        IEnumerable<string>? first,
+        IEnumerable<string>? second)
+    {
+        var output = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var entry in first ?? [])
+        {
+            if (seen.Add(entry))
+                output.Add(entry);
+        }
+
+        foreach (var entry in second ?? [])
+        {
+            if (seen.Add(entry))
+                output.Add(entry);
+        }
+
+        return output;
+    }
+
+    private static List<string> CollectTransitiveLinkTargets(
+        IEnumerable<string> transitiveDependencyNames,
+        PackageRegistry registry)
+    {
+        var targets = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var transitiveDependencyText in transitiveDependencyNames)
+        {
+            var transitiveSpec = DependencySpec.Parse(transitiveDependencyText);
+            var transitivePackage = registry.Find(transitiveSpec.PackageName);
+            if (transitivePackage is null)
+                continue;
+
+            foreach (var cmakeTarget in transitivePackage.CmakeTargets)
+            {
+                if (seen.Add(cmakeTarget))
+                    targets.Add(cmakeTarget);
+            }
+        }
+
+        return targets;
+    }
+
     // ─── Private write helpers ───────────────────────────────────────
 
     /// <summary>
@@ -393,6 +623,16 @@ public class CmakeBuilder
         w.Line($"set(CMAKE_CXX_STANDARD {_cxxStandard})");
         w.Line("set(CMAKE_CXX_STANDARD_REQUIRED ON)");
         w.Line("set(CMAKE_CXX_EXTENSIONS OFF)");
+    }
+
+    private void WriteCmakeOptions(CmakeWriter w)
+    {
+        if (_cmakeOptions.Count == 0) return;
+
+        w.Blank();
+        w.Line("# Dependency build options");
+        foreach (var (key, value) in _cmakeOptions)
+            w.Line($"set({key} {value} CACHE BOOL \"\")");
     }
 
     /// <summary>
@@ -414,11 +654,128 @@ public class CmakeBuilder
             w.Line($"    {fc.Name}");
             w.Line($"    GIT_REPOSITORY {fc.GitRepo}");
             w.Line($"    GIT_TAG        {fc.GitTag}");
+            w.Line($"    GIT_SHALLOW    TRUE");
             w.Line($")");
         }
 
         var names = string.Join(" ", _fetchContents.Select(fc => fc.Name));
         w.Line($"FetchContent_MakeAvailable({names})");
+    }
+
+    private void WriteWrapperPackages(CmakeWriter w)
+    {
+        if (_wrapperPackages.Count == 0) return;
+
+        if (_fetchContents.Count == 0)
+        {
+            w.Blank();
+            w.Line("include(FetchContent)");
+        }
+
+        foreach (var package in _wrapperPackages)
+        {
+            var internalTarget = $"{ToSafeTargetIdentifier(package.Name)}_lib";
+
+            w.Blank();
+            w.Line($"FetchContent_Declare(");
+            w.Line($"    {package.Name}");
+            w.Line($"    GIT_REPOSITORY {package.GitRepo}");
+            w.Line($"    GIT_TAG        {package.GitTag}");
+            w.Line($"    GIT_SHALLOW    TRUE");
+            w.Line(")");
+            w.Line($"FetchContent_GetProperties({package.Name})");
+            w.Line($"if(NOT {package.Name}_POPULATED)");
+            w.Line($"    FetchContent_Populate({package.Name})");
+            w.Line("endif()");
+            w.Blank();
+
+            if (package.InterfaceOnly)
+            {
+                w.Line($"add_library({internalTarget} INTERFACE)");
+
+                if (package.IncludeDirs.Count > 0)
+                {
+                    w.Line($"target_include_directories({internalTarget} INTERFACE");
+                    foreach (var includeDir in package.IncludeDirs)
+                        w.Line($"    {AsSourceDir(package.Name, includeDir)}");
+                    w.Line(")");
+                }
+
+                if (package.CompileDefinitions.Count > 0)
+                {
+                    w.Line($"target_compile_definitions({internalTarget} INTERFACE");
+                    foreach (var definition in package.CompileDefinitions)
+                        w.Line($"    {definition}");
+                    w.Line(")");
+                }
+
+                if (package.LinkLibraries.Count > 0)
+                {
+                    w.Line($"target_link_libraries({internalTarget} INTERFACE");
+                    foreach (var dependencyTarget in package.LinkLibraries)
+                        w.Line($"    {dependencyTarget}");
+                    w.Line(")");
+                }
+            }
+            else
+            {
+                w.Line($"add_library({internalTarget} STATIC)");
+
+                if (package.Sources.Count > 0)
+                {
+                    w.Line($"target_sources({internalTarget} PRIVATE");
+                    foreach (var source in package.Sources)
+                        w.Line($"    {AsSourceDir(package.Name, source)}");
+                    w.Line(")");
+                }
+
+                if (package.IncludeDirs.Count > 0)
+                {
+                    w.Line($"target_include_directories({internalTarget} PUBLIC");
+                    foreach (var includeDir in package.IncludeDirs)
+                        w.Line($"    {AsSourceDir(package.Name, includeDir)}");
+                    w.Line(")");
+                }
+
+                if (package.CompileDefinitions.Count > 0)
+                {
+                    w.Line($"target_compile_definitions({internalTarget} PUBLIC");
+                    foreach (var definition in package.CompileDefinitions)
+                        w.Line($"    {definition}");
+                    w.Line(")");
+                }
+
+                if (package.LinkLibraries.Count > 0)
+                {
+                    w.Line($"target_link_libraries({internalTarget} PUBLIC");
+                    foreach (var dependencyTarget in package.LinkLibraries)
+                        w.Line($"    {dependencyTarget}");
+                    w.Line(")");
+                }
+            }
+
+            foreach (var aliasTarget in package.CmakeTargets)
+                w.Line($"add_library({aliasTarget} ALIAS {internalTarget})");
+        }
+    }
+
+    private static string ToSafeTargetIdentifier(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+            return "package";
+
+        var chars = name.Select(ch => char.IsLetterOrDigit(ch) || ch == '_' ? ch : '_').ToArray();
+        var identifier = new string(chars);
+        if (char.IsDigit(identifier[0]))
+            return $"pkg_{identifier}";
+        return identifier;
+    }
+
+    private static string AsSourceDir(string packageName, string relativePath)
+    {
+        if (string.Equals(relativePath, ".", StringComparison.Ordinal))
+            return $"${{{packageName}_SOURCE_DIR}}";
+        return $"${{{packageName}_SOURCE_DIR}}/{relativePath}";
     }
 
     private void WriteFindPackages(CmakeWriter w)
@@ -511,7 +868,6 @@ public class CmakeBuilder
         if (_linkLibraries.Count == 0) return;
 
         var scope = _outputType == OutputType.exe ? "PRIVATE" : "PUBLIC";
-        var libs = string.Join("\n    ", _linkLibraries);
         w.Line($"target_link_libraries({_projectName} {scope}");
         foreach (var lib in _linkLibraries)
             w.Line($"    {lib}");
@@ -567,9 +923,19 @@ public class CmakeBuilder
         w.Blank();
         w.Line("include(CMakePackageConfigHelpers)");
         w.Blank();
-        w.Line($"file(WRITE \"${{CMAKE_CURRENT_BINARY_DIR}}/{_projectName}-config.cmake\"");
-        w.Line($"    \"include(CMakeFindDependencyMacro)\\ninclude(\\\"${{CMAKE_CURRENT_LIST_DIR}}/{_projectName}-targets.cmake\\\")\\n\"");
-        w.Line(")");
+
+        w.Line($"file(WRITE \"${{CMAKE_CURRENT_BINARY_DIR}}/{_projectName}-config.cmake\" [=[");
+        w.Line("include(CMakeFindDependencyMacro)");
+
+        foreach (var dependencyName in _findPackages
+                     .Select(p => p.Name)
+                     .Distinct(StringComparer.Ordinal))
+        {
+            w.Line($"find_dependency({dependencyName} CONFIG REQUIRED)");
+        }
+
+        w.Line($"include(\"${{CMAKE_CURRENT_LIST_DIR}}/{_projectName}-targets.cmake\")");
+        w.Line("]=])");
         w.Blank();
         w.Line($"install(FILES \"${{CMAKE_CURRENT_BINARY_DIR}}/{_projectName}-config.cmake\"");
         w.Line($"    DESTINATION ${{CMAKE_INSTALL_LIBDIR}}/cmake/{_projectName}");
@@ -612,6 +978,16 @@ public class CmakeBuilder
 
     private record FindPackageDep(string Name, bool Required, bool ConfigMode);
     private record FetchContentDep(string Name, string GitRepo, string GitTag);
+    private record WrapperPackageDep(
+        string Name,
+        string GitRepo,
+        string GitTag,
+        List<string> Sources,
+        List<string> IncludeDirs,
+        List<string> CompileDefinitions,
+        List<string> CmakeTargets,
+        List<string> LinkLibraries,
+        bool InterfaceOnly);
     private record TestTarget(string Name, List<string> Sources, List<string> LinkLibraries);
 }
 

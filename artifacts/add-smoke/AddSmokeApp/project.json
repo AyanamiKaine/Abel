@@ -1,0 +1,16 @@
+{
+  "name": "AddSmokeApp",
+  "cxx_standard": 23,
+  "output_type": "exe",
+  "sources": {},
+  "dependencies": [
+    "fmt",
+    "spdlog",
+    "sdl3",
+    "imgui/sdl3_renderer",
+    "flecs"
+  ],
+  "tests": {
+    "files": []
+  }
+}

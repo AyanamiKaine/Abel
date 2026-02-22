@@ -7,6 +7,16 @@
     <Nullable>enable</Nullable>
     <LangVersion>latest</LangVersion>
 
+    <IsPackable>true</IsPackable>
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>abel</ToolCommandName>
+    <PackageId>Abel.Tool</PackageId>
+    <Version>0.1.2</Version>
+    <Authors>Abel</Authors>
+    <Description>Opinionated C++ build and run tool using CMake + Ninja.</Description>
+    <PackageTags>cpp;cmake;ninja;build;cli</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <NoWarn>CA1303</NoWarn>
 
@@ -41,6 +51,10 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Abel.Core\Abel.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="\" />
   </ItemGroup>
 
 </Project>

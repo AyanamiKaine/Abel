@@ -43,6 +43,7 @@ public class ProjectConfig
     public IDictionary<string, string[]> Sources { get; }
 
     [JsonPropertyName("dependencies")]
+    [JsonObjectCreationHandling(JsonObjectCreationHandling.Populate)]
     public IList<string> Dependencies { get; }
 
     [JsonPropertyName("tests")]

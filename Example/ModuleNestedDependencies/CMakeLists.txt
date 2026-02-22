@@ -5,6 +5,8 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+find_package(log CONFIG REQUIRED)
+
 add_library(math_module STATIC)
 target_sources(math_module
     PUBLIC FILE_SET CXX_MODULES FILES
@@ -13,6 +15,9 @@ target_sources(math_module
         src/math_impl.cpp
 )
 target_compile_features(math_module PUBLIC cxx_std_23)
+target_link_libraries(math_module PUBLIC
+    log::log
+)
 
 include(GNUInstallDirs)
 
@@ -30,9 +35,11 @@ install(EXPORT math_module-targets
 
 include(CMakePackageConfigHelpers)
 
-file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/math_module-config.cmake"
-    "include(CMakeFindDependencyMacro)\ninclude(\"${CMAKE_CURRENT_LIST_DIR}/math_module-targets.cmake\")\n"
-)
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/math_module-config.cmake" [=[
+include(CMakeFindDependencyMacro)
+find_dependency(log CONFIG REQUIRED)
+include("${CMAKE_CURRENT_LIST_DIR}/math_module-targets.cmake")
+]=])
 
 install(FILES "${CMAKE_CURRENT_BINARY_DIR}/math_module-config.cmake"
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/math_module

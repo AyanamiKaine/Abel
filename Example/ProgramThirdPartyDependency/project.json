@@ -1,0 +1,6 @@
+{
+	"name": "sdl_example",
+	"output_type": "exe",
+	"cxx_standard": 23,
+	"dependencies": ["sdl3"]
+}

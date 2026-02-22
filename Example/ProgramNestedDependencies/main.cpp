@@ -1,6 +1,7 @@
-#include <print>
+import log;
 
-auto main() -> int 
+auto main() -> int
 {
-    std::println("Hello, World");
+    logger::info("Hello from ProgramNestedDependencies");
+    return 0;
 }

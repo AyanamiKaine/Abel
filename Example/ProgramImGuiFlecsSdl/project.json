@@ -1,0 +1,6 @@
+{
+	"name": "imgui_flecs_sdl_demo",
+	"output_type": "exe",
+	"cxx_standard": 23,
+	"dependencies": ["sdl3", "imgui/sdl3_renderer", "flecs"]
+}

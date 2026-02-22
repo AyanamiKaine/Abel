@@ -30,9 +30,10 @@ install(EXPORT math_module-targets
 
 include(CMakePackageConfigHelpers)
 
-file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/math_module-config.cmake"
-    "include(CMakeFindDependencyMacro)\ninclude(\"${CMAKE_CURRENT_LIST_DIR}/math_module-targets.cmake\")\n"
-)
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/math_module-config.cmake" [=[
+include(CMakeFindDependencyMacro)
+include("${CMAKE_CURRENT_LIST_DIR}/math_module-targets.cmake")
+]=])
 
 install(FILES "${CMAKE_CURRENT_BINARY_DIR}/math_module-config.cmake"
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/math_module

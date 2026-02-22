@@ -1,0 +1,17 @@
+{
+  "name": "SmokeModule",
+  "output_type": "library",
+  "cxx_standard": 23,
+  "sources": {
+    "modules": [
+      "src/smokemodule.cppm"
+    ],
+    "private": [
+      "src/smokemodule_impl.cpp"
+    ]
+  },
+  "dependencies": [],
+  "tests": {
+    "files": []
+  }
+}
