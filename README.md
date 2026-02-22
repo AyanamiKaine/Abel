@@ -1,6 +1,8 @@
 # Abel
 
-Abel is an opinionated C++ build runner on top of CMake + Ninja.
+Abel is an opinionated C++ build runner on top of CMake + Ninja. Its cool when you want to create a new modern C++ project using modules for example. IT COULD NEVER BE USED TO REPLACE ALREADY USED SOLUTIONS.
+
+Abel has only one real clear goal, be able to say `abel run` in a C++ project, and it just works. Sane defaults all around.
 
 It provides a simple CLI for:
 
