@@ -281,7 +281,7 @@ public class AbelRunner(bool verbose = false)
                 await BuildProject(projectFilePath, projectConfig, localInstallPrefix).ConfigureAwait(false);
 
                 if (projectConfig.ProjectOutputType == OutputType.library)
-                    await InstallProject(projectFilePath, localInstallPrefix).ConfigureAwait(false);
+                    await InstallProject(projectFilePath, localInstallPrefix, projectConfig.Name).ConfigureAwait(false);
             }
             catch (CliWrap.Exceptions.CommandExecutionException ex)
             {
@@ -297,7 +297,7 @@ public class AbelRunner(bool verbose = false)
                 await BuildProject(projectFilePath, projectConfig, localInstallPrefix).ConfigureAwait(false);
 
                 if (projectConfig.ProjectOutputType == OutputType.library)
-                    await InstallProject(projectFilePath, localInstallPrefix).ConfigureAwait(false);
+                    await InstallProject(projectFilePath, localInstallPrefix, projectConfig.Name).ConfigureAwait(false);
             }
 
             projectSw.Stop();
@@ -321,9 +321,17 @@ public class AbelRunner(bool verbose = false)
         ProjectConfig projectConfig,
         string localInstallPrefix)
     {
+        var registryDependencyPlan = BuildRegistryDependencyPlan(projectConfig);
+        if (registryDependencyPlan.Count > 0)
+            WriteProgressLine($"  step {projectConfig.Name}: fetch/build dependencies {FormatDependencyList(registryDependencyPlan)}");
+
+        WriteProgressLine($"  step {projectConfig.Name}: generate CMakeLists.txt");
         var cmakeScript = CmakeBuilder.FromProjectConfig(projectConfig, _registry).Build();
         var cmakeListsPath = Path.Combine(projectFilePath, "CMakeLists.txt");
         var cmakeListsChanged = await WriteTextIfChanged(cmakeListsPath, cmakeScript).ConfigureAwait(false);
+        WriteProgressLine(cmakeListsChanged
+            ? $"  [ok] CMakeLists.txt updated for {projectConfig.Name}"
+            : $"  [ok] CMakeLists.txt unchanged for {projectConfig.Name}");
 
         var configureArguments = new[]
         {
@@ -336,60 +344,36 @@ public class AbelRunner(bool verbose = false)
         var buildCachePath = Path.Combine(projectFilePath, "build", "CMakeCache.txt");
         var needsConfigure = cmakeListsChanged || !File.Exists(buildCachePath);
 
-        if (Verbose)
+        if (needsConfigure)
         {
-            if (needsConfigure)
-            {
-                await Cli.Wrap("cmake")
-                    .WithArguments(configureArguments)
-                    .WithWorkingDirectory(projectFilePath)
-                    .WithStandardOutputPipe(PipeTarget.ToDelegate(Console.WriteLine))
-                    .WithStandardErrorPipe(PipeTarget.ToDelegate(Console.Error.WriteLine))
-                    .ExecuteBufferedAsync().ConfigureAwait(false);
-            }
-
-            await Cli.Wrap("cmake")
-                .WithArguments(["--build", "build"])
-                .WithWorkingDirectory(projectFilePath)
-                .WithStandardOutputPipe(PipeTarget.ToDelegate(Console.WriteLine))
-                .WithStandardErrorPipe(PipeTarget.ToDelegate(Console.Error.WriteLine))
-                .ExecuteBufferedAsync().ConfigureAwait(false);
+            await ExecuteCommandAsync(
+                "cmake",
+                configureArguments,
+                projectFilePath,
+                $"configure {projectConfig.Name}",
+                ParseConfigureProgress).ConfigureAwait(false);
         }
         else
         {
-            if (needsConfigure)
-            {
-                await Cli.Wrap("cmake")
-                    .WithArguments(configureArguments)
-                    .WithWorkingDirectory(projectFilePath)
-                    .ExecuteBufferedAsync().ConfigureAwait(false);
-            }
-
-            await Cli.Wrap("cmake")
-                .WithArguments(["--build", "build"])
-                .WithWorkingDirectory(projectFilePath)
-                .ExecuteBufferedAsync().ConfigureAwait(false);
+            WriteProgressLine($"  [ok] configure {projectConfig.Name} (up-to-date)");
         }
+
+        await ExecuteCommandAsync(
+            "cmake",
+            ["--build", "build"],
+            projectFilePath,
+            $"build {projectConfig.Name}",
+            ParseBuildProgress).ConfigureAwait(false);
     }
 
-    private async Task InstallProject(string projectFilePath, string localInstallPrefix)
+    private async Task InstallProject(string projectFilePath, string localInstallPrefix, string projectName)
     {
-        if (Verbose)
-        {
-            await Cli.Wrap("cmake")
-                .WithArguments(["--install", "build", "--prefix", localInstallPrefix])
-                .WithWorkingDirectory(projectFilePath)
-                .WithStandardOutputPipe(PipeTarget.ToDelegate(Console.WriteLine))
-                .WithStandardErrorPipe(PipeTarget.ToDelegate(Console.Error.WriteLine))
-                .ExecuteBufferedAsync().ConfigureAwait(false);
-        }
-        else
-        {
-            await Cli.Wrap("cmake")
-                .WithArguments(["--install", "build", "--prefix", localInstallPrefix])
-                .WithWorkingDirectory(projectFilePath)
-                .ExecuteBufferedAsync().ConfigureAwait(false);
-        }
+        await ExecuteCommandAsync(
+            "cmake",
+            ["--install", "build", "--prefix", localInstallPrefix],
+            projectFilePath,
+            $"install {projectName}",
+            ParseInstallProgress).ConfigureAwait(false);
     }
 
     private IReadOnlyDictionary<string, LocalProjectReference> ResolveLocalDependencies(
@@ -510,5 +494,391 @@ public class AbelRunner(bool verbose = false)
 
         await File.WriteAllTextAsync(path, content).ConfigureAwait(false);
         return true;
+    }
+
+    private async Task ExecuteCommandAsync(
+        string fileName,
+        IReadOnlyList<string> arguments,
+        string workingDirectory,
+        string activityLabel,
+        Func<string, string?>? progressParser = null)
+    {
+        if (Verbose)
+        {
+            await Cli.Wrap(fileName)
+                .WithArguments(arguments)
+                .WithWorkingDirectory(workingDirectory)
+                .WithStandardOutputPipe(PipeTarget.ToDelegate(Console.WriteLine))
+                .WithStandardErrorPipe(PipeTarget.ToDelegate(Console.Error.WriteLine))
+                .ExecuteBufferedAsync().ConfigureAwait(false);
+            return;
+        }
+
+        var activity = new ActivityState();
+        var outputPipe = CreateActivityPipe(progressParser, activity, emitDetails: Console.IsOutputRedirected);
+
+        var command = Cli.Wrap(fileName)
+            .WithArguments(arguments)
+            .WithWorkingDirectory(workingDirectory)
+            .WithStandardOutputPipe(outputPipe)
+            .WithStandardErrorPipe(outputPipe);
+
+        if (Console.IsOutputRedirected)
+        {
+            Console.WriteLine($"  {activityLabel}...");
+            await command.ExecuteBufferedAsync().ConfigureAwait(false);
+            return;
+        }
+
+        await RunWithSpinnerAsync(activityLabel, activity, command).ConfigureAwait(false);
+    }
+
+    private static PipeTarget CreateActivityPipe(
+        Func<string, string?>? progressParser,
+        ActivityState activity,
+        bool emitDetails)
+    {
+        if (progressParser is null)
+            return PipeTarget.Null;
+
+        return PipeTarget.ToDelegate(line =>
+        {
+            if (string.IsNullOrWhiteSpace(line))
+                return;
+
+            var detail = progressParser(line);
+            if (!activity.TrySet(detail))
+                return;
+
+            if (!emitDetails || string.IsNullOrWhiteSpace(detail))
+                return;
+
+            Console.WriteLine($"    > {detail}");
+        });
+    }
+
+    private static async Task RunWithSpinnerAsync(string activityLabel, ActivityState activity, Command command)
+    {
+        var timer = Stopwatch.StartNew();
+        using var cts = new CancellationTokenSource();
+        var spinnerTask = SpinAsync(activityLabel, activity, timer, cts.Token);
+
+        try
+        {
+            await command.ExecuteBufferedAsync().ConfigureAwait(false);
+            await cts.CancelAsync().ConfigureAwait(false);
+            await WaitForSpinnerStop(spinnerTask).ConfigureAwait(false);
+
+            WriteCompletedLine($"  [ok] {activityLabel} ({FormatElapsed(timer.Elapsed)})");
+        }
+        catch
+        {
+            await cts.CancelAsync().ConfigureAwait(false);
+            await WaitForSpinnerStop(spinnerTask).ConfigureAwait(false);
+
+            WriteCompletedLine($"  [fail] {activityLabel} ({FormatElapsed(timer.Elapsed)})");
+            throw;
+        }
+    }
+
+    private static async Task SpinAsync(string activityLabel, ActivityState activity, Stopwatch timer, CancellationToken token)
+    {
+        string[] frames = ["|", "/", "-", "\\"];
+        var frameIndex = 0;
+
+        while (!token.IsCancellationRequested)
+        {
+            var frame = frames[frameIndex % frames.Length];
+            frameIndex++;
+
+            var detail = activity.Get();
+            var label = string.IsNullOrWhiteSpace(detail)
+                ? activityLabel
+                : $"{activityLabel} | {detail}";
+
+            WriteStatusLine($"  [{frame}] {label} {FormatElapsed(timer.Elapsed)}");
+
+            try
+            {
+                await Task.Delay(120, token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+        }
+    }
+
+    private static async Task WaitForSpinnerStop(Task spinnerTask)
+    {
+        try
+        {
+            await spinnerTask.ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
+
+    private static void WriteStatusLine(string content)
+    {
+        var width = GetConsoleWidth();
+        if (width <= 0)
+        {
+            Console.WriteLine(content);
+            return;
+        }
+
+        var safe = content.Length >= width ? content[..(width - 1)] : content;
+        Console.Write('\r');
+        Console.Write(safe.PadRight(width - 1));
+    }
+
+    private static void WriteCompletedLine(string content)
+    {
+        var width = GetConsoleWidth();
+        if (width > 0)
+            Console.Write("\r" + new string(' ', width - 1) + "\r");
+
+        Console.WriteLine(content);
+    }
+
+    private static int GetConsoleWidth()
+    {
+        try
+        {
+            return Console.BufferWidth;
+        }
+        catch (IOException)
+        {
+            return 0;
+        }
+    }
+
+    private List<string> BuildRegistryDependencyPlan(ProjectConfig projectConfig)
+    {
+        var resolved = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var ordered = new List<string>();
+
+        foreach (var dependencyText in projectConfig.Dependencies)
+        {
+            var spec = DependencySpec.Parse(dependencyText);
+            CollectRegistryDependency(spec.PackageName, spec.VariantName, resolved, ordered);
+        }
+
+        return ordered;
+    }
+
+    private void CollectRegistryDependency(
+        string packageName,
+        string? variantName,
+        HashSet<string> resolved,
+        List<string> ordered)
+    {
+        var package = _registry.Find(packageName);
+        if (package is null)
+            return;
+
+        if (!resolved.Add(package.Name))
+            return;
+
+        foreach (var dependency in package.Dependencies)
+        {
+            var dependencySpec = DependencySpec.Parse(dependency);
+            CollectRegistryDependency(
+                dependencySpec.PackageName,
+                dependencySpec.VariantName,
+                resolved,
+                ordered);
+        }
+
+        if (!string.IsNullOrWhiteSpace(variantName) &&
+            package.Variants.TryGetValue(variantName, out var variant))
+        {
+            foreach (var dependency in variant.Dependencies)
+            {
+                var dependencySpec = DependencySpec.Parse(dependency);
+                CollectRegistryDependency(
+                    dependencySpec.PackageName,
+                    dependencySpec.VariantName,
+                    resolved,
+                    ordered);
+            }
+        }
+
+        ordered.Add(package.Name);
+    }
+
+    private static string FormatDependencyList(List<string> dependencies)
+    {
+        if (dependencies.Count <= 6)
+            return $"[{string.Join(", ", dependencies)}]";
+
+        var preview = string.Join(", ", dependencies.Take(6));
+        return $"[{preview}, +{dependencies.Count - 6} more]";
+    }
+
+    private void WriteProgressLine(string content)
+    {
+        if (Verbose)
+            return;
+
+        Console.WriteLine(content);
+    }
+
+    private static string? ParseConfigureProgress(string line)
+    {
+        if (line.Contains("Populating ", StringComparison.OrdinalIgnoreCase))
+        {
+            var depName = line[(line.IndexOf("Populating ", StringComparison.OrdinalIgnoreCase) + "Populating ".Length)..].Trim();
+            if (!string.IsNullOrWhiteSpace(depName))
+                return $"fetch dependency {depName}";
+        }
+
+        var extracted = ExtractDependencyName(line);
+        if (!string.IsNullOrWhiteSpace(extracted))
+            return $"fetch dependency {extracted}";
+
+        if (line.Contains("Configuring done", StringComparison.OrdinalIgnoreCase))
+            return "finalize configure";
+        if (line.Contains("Generating done", StringComparison.OrdinalIgnoreCase))
+            return "generate build graph";
+
+        return null;
+    }
+
+    private static string? ParseBuildProgress(string line)
+    {
+        var depName = ExtractDependencyName(line);
+        if (!string.IsNullOrWhiteSpace(depName))
+            return $"build dependency {depName}";
+
+        if (line.Contains("Building CXX object", StringComparison.OrdinalIgnoreCase) ||
+            line.Contains("Building C object", StringComparison.OrdinalIgnoreCase) ||
+            line.Contains("Building CXX module", StringComparison.OrdinalIgnoreCase))
+        {
+            return "compile project sources";
+        }
+
+        if (line.Contains("Linking CXX executable", StringComparison.OrdinalIgnoreCase) ||
+            line.Contains("Linking CXX static library", StringComparison.OrdinalIgnoreCase) ||
+            line.Contains("Linking CXX shared library", StringComparison.OrdinalIgnoreCase))
+        {
+            return "link project";
+        }
+
+        if (line.Contains("no work to do", StringComparison.OrdinalIgnoreCase))
+            return "no rebuild needed";
+
+        return null;
+    }
+
+    private static string? ParseInstallProgress(string line)
+    {
+        if (line.Contains("Installing:", StringComparison.OrdinalIgnoreCase))
+            return "install project artifacts";
+
+        if (line.Contains("Up-to-date:", StringComparison.OrdinalIgnoreCase))
+            return "artifacts already installed";
+
+        return null;
+    }
+
+    private static string? ExtractDependencyName(string line)
+    {
+        if (string.IsNullOrWhiteSpace(line))
+            return null;
+
+        var forIndex = line.IndexOf("for '", StringComparison.OrdinalIgnoreCase);
+        if (forIndex >= 0)
+        {
+            var start = forIndex + "for '".Length;
+            var end = line.IndexOf('\'', start);
+            if (end > start)
+            {
+                var quotedToken = line[start..end];
+                var normalized = NormalizeDependencyName(quotedToken);
+                if (!string.IsNullOrWhiteSpace(normalized))
+                    return normalized;
+            }
+        }
+
+        var depsIndex = line.IndexOf("_deps/", StringComparison.OrdinalIgnoreCase);
+        if (depsIndex < 0)
+            depsIndex = line.IndexOf("_deps\\", StringComparison.OrdinalIgnoreCase);
+
+        if (depsIndex < 0)
+            return null;
+
+        var depStart = depsIndex + "_deps/".Length;
+        var depEnd = depStart;
+        while (depEnd < line.Length)
+        {
+            var ch = line[depEnd];
+            if (ch is '/' or '\\' or ' ' or ')' or '(' or ':')
+                break;
+            depEnd++;
+        }
+
+        if (depEnd <= depStart)
+            return null;
+
+        var token = line[depStart..depEnd];
+        return NormalizeDependencyName(token);
+    }
+
+    private static string? NormalizeDependencyName(string token)
+    {
+        if (string.IsNullOrWhiteSpace(token))
+            return null;
+
+        var normalized = token.Trim();
+        string[] suffixes =
+        [
+            "-populate-prefix",
+            "-populate",
+            "-subbuild",
+            "-build",
+            "-src",
+            "-stamp",
+        ];
+
+        foreach (var suffix in suffixes)
+        {
+            if (normalized.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
+            {
+                normalized = normalized[..^suffix.Length];
+                break;
+            }
+        }
+
+        return string.IsNullOrWhiteSpace(normalized) ? null : normalized;
+    }
+
+    private sealed class ActivityState
+    {
+        private readonly Lock _gate = new();
+        private string? _current;
+
+        public bool TrySet(string? detail)
+        {
+            if (string.IsNullOrWhiteSpace(detail))
+                return false;
+
+            lock (_gate)
+            {
+                if (string.Equals(_current, detail, StringComparison.Ordinal))
+                    return false;
+
+                _current = detail;
+                return true;
+            }
+        }
+
+        public string? Get()
+        {
+            lock (_gate)
+                return _current;
+        }
     }
 }

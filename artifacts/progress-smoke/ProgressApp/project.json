@@ -1,0 +1,13 @@
+{
+  "name": "ProgressApp",
+  "cxx_standard": 23,
+  "output_type": "exe",
+  "sources": {},
+  "dependencies": [
+    "fmt",
+    "spdlog"
+  ],
+  "tests": {
+    "files": []
+  }
+}
