@@ -149,6 +149,19 @@ public class PackageRegistry
 
         Register(new PackageEntry
         {
+            Name = "fmtlog",
+            GitRepository = "https://github.com/MengRao/fmtlog.git",
+            GitTag = "v2.3.0",
+            Strategy = "wrapper",
+            CmakeTargets = ["fmtlog::fmtlog"],
+            Sources = ["fmtlog.cc"],
+            IncludeDirs = ["."],
+            Dependencies = ["fmt"],
+            Description = "High-performance asynchronous logging library built on fmt",
+        });
+
+        Register(new PackageEntry
+        {
             Name = "flecs",
             GitRepository = "https://github.com/SanderMertens/flecs.git",
             GitTag = "v4.1.4",
