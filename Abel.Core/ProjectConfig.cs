@@ -55,6 +55,9 @@ public class BuildConfig
     [JsonPropertyName("default_configuration")]
     public string? DefaultConfiguration { get; set; }
 
+    [JsonPropertyName("legacy_header_src_layout")]
+    public bool LegacyHeaderSrcLayout { get; set; }
+
     [JsonPropertyName("compile_options")]
     public BuildCompilerOptionsConfig CompileOptions { get; set; } = new();
 

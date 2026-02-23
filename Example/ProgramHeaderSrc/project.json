@@ -1,0 +1,9 @@
+{
+  "name": "ProgramHeaderSrc",
+  "output_type": "exe",
+  "cxx_standard": 23,
+  "dependencies": [],
+  "build": {
+    "legacy_header_src_layout": true
+  }
+}

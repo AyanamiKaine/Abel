@@ -44,6 +44,7 @@ public class CmakeBuilder
 
     // Install
     private bool _enableInstall = false;
+    private bool _enableLegacyHeaderSrcLayout = false;
 
     // ─── Fluent setters ──────────────────────────────────────────────
 
@@ -351,6 +352,12 @@ public class CmakeBuilder
         return this;
     }
 
+    public CmakeBuilder EnableLegacyHeaderSrcLayout()
+    {
+        _enableLegacyHeaderSrcLayout = true;
+        return this;
+    }
+
     // ─── Build ───────────────────────────────────────────────────────
 
     public string Build()
@@ -358,7 +365,10 @@ public class CmakeBuilder
         if (string.IsNullOrWhiteSpace(_projectName))
             throw new InvalidOperationException("Project name is required. Call SetProject() first.");
 
-        if (_outputType == OutputType.library && _privateSources.Count == 0 && _moduleSources.Count == 0)
+        if (_outputType == OutputType.library &&
+            _privateSources.Count == 0 &&
+            _moduleSources.Count == 0 &&
+            !_enableLegacyHeaderSrcLayout)
             throw new InvalidOperationException(
                 $"Library '{_projectName}' has no source files. Add module sources or private sources.");
 
@@ -370,6 +380,7 @@ public class CmakeBuilder
         WriteWrapperPackages(w);
         WriteFindPackages(w);
         WriteTarget(w);
+        WriteLegacyHeaderSrcSupport(w);
         WriteSources(w);
         WriteCompileFeatures(w);
         WriteDefaultCompilerFlags(w);
@@ -424,6 +435,9 @@ public class CmakeBuilder
 
         if (config.Build is not null)
         {
+            if (config.Build.LegacyHeaderSrcLayout)
+                builder.EnableLegacyHeaderSrcLayout();
+
             builder.AddProjectCompileOptions(config.Build.CompileOptions);
 
             foreach (var configuration in config.Build.Configurations)
@@ -880,6 +894,41 @@ public class CmakeBuilder
         {
             w.Line($"add_library({_projectName} STATIC)");
         }
+    }
+
+    private void WriteLegacyHeaderSrcSupport(CmakeWriter w)
+    {
+        if (!_enableLegacyHeaderSrcLayout)
+            return;
+
+        w.Blank();
+        w.Line("# Legacy header/src support (non-module layout).");
+        var includeScope = _outputType == OutputType.library ? "PUBLIC" : "PRIVATE";
+        w.Line("if(EXISTS \"${CMAKE_CURRENT_SOURCE_DIR}/include\")");
+        w.Line($"    target_include_directories({_projectName} {includeScope}");
+        w.Line("        \"${CMAKE_CURRENT_SOURCE_DIR}/include\"");
+        w.Line("    )");
+        w.Line("endif()");
+
+        if (_privateSources.Count > 0 || _moduleSources.Count > 0 || _publicHeaders.Count > 0)
+            return;
+
+        var legacySourcesVariable = BuildLegacySourcesVariableName();
+        w.Line($"file(GLOB_RECURSE {legacySourcesVariable} CONFIGURE_DEPENDS");
+        w.Line("    \"${CMAKE_CURRENT_SOURCE_DIR}/src/*.c\"");
+        w.Line("    \"${CMAKE_CURRENT_SOURCE_DIR}/src/*.cc\"");
+        w.Line("    \"${CMAKE_CURRENT_SOURCE_DIR}/src/*.cxx\"");
+        w.Line("    \"${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp\"");
+        w.Line(")");
+        w.Line($"if({legacySourcesVariable})");
+        w.Line($"    target_sources({_projectName} PRIVATE ${{{legacySourcesVariable}}})");
+        w.Line("endif()");
+    }
+
+    private string BuildLegacySourcesVariableName()
+    {
+        var prefix = ToSafeTargetIdentifier(_projectName).ToUpperInvariant();
+        return $"ABEL_{prefix}_LEGACY_SOURCES";
     }
 
     private void WriteSources(CmakeWriter w)

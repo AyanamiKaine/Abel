@@ -122,6 +122,7 @@ Notes:
 - `build.default_configuration` is used when `abel build/run` is called without `--release`, `--debug`, or `--configuration`.
 - CLI configuration flags always override `project.json`.
 - Configuration keys under `build.configurations` support: `Debug`, `Release`, `RelWithDebInfo`, `MinSizeRel`.
+- Set `build.legacy_header_src_layout` to `true` to support classic `include/` + `src/` projects without modules.
 
 Module library:
 

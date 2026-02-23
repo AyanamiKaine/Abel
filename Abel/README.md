@@ -17,6 +17,7 @@ Abel is an opinionated C++ build runner built around CMake + Ninja.
 - `abel version`
 
 Configuration precedence for `build`/`run`: CLI (`--release/--debug/-c`) > `project.json` (`build.default_configuration`) > `Release`.
+Legacy header/src layout: set `build.legacy_header_src_layout` to `true` in `project.json`.
 
 ## Path Resolution
 
