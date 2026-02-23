@@ -9,6 +9,7 @@ public class PackageRegistry
 {
     private static readonly StringComparer KeyComparer = StringComparer.OrdinalIgnoreCase;
     private readonly Dictionary<string, PackageEntry> _packages = new(KeyComparer);
+    private readonly Dictionary<string, string> _aliases = new(KeyComparer);
 
     public PackageRegistry()
     {
@@ -24,8 +25,11 @@ public class PackageRegistry
         LoadFromFile(Path.Combine(Environment.CurrentDirectory, "abel-registry.json"));
     }
 
-    public PackageEntry? Find(string name) =>
-        _packages.TryGetValue(name, out var entry) ? entry : null;
+    public PackageEntry? Find(string name)
+    {
+        var resolved = ResolvePackageName(name);
+        return _packages.TryGetValue(resolved, out var entry) ? entry : null;
+    }
 
     public bool IsKnownPackage(string name)
     {
@@ -33,7 +37,7 @@ public class PackageRegistry
             return false;
 
         var parsed = DependencySpec.Parse(name);
-        return _packages.ContainsKey(parsed.PackageName);
+        return _packages.ContainsKey(ResolvePackageName(parsed.PackageName));
     }
 
     public IEnumerable<PackageEntry> All => _packages.Values;
@@ -62,6 +66,17 @@ public class PackageRegistry
         ArgumentException.ThrowIfNullOrWhiteSpace(entry.Name);
         _packages[entry.Name] = entry;
     }
+
+    private void RegisterAlias(string alias, string packageName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(alias);
+        ArgumentException.ThrowIfNullOrWhiteSpace(packageName);
+
+        _aliases[alias] = packageName;
+    }
+
+    private string ResolvePackageName(string packageName) =>
+        _aliases.TryGetValue(packageName, out var canonicalName) ? canonicalName : packageName;
 
     private void LoadBuiltinPackages()
     {
@@ -230,7 +245,7 @@ public class PackageRegistry
         {
             Name = "nlohmann_json",
             GitRepository = "https://github.com/nlohmann/json.git",
-            GitTag = "v3.11.3",
+            GitTag = "v3.12.0",
             Strategy = "fetchcontent",
             CmakeTargets = ["nlohmann_json::nlohmann_json"],
             CmakeOptions = new Dictionary<string, string>(KeyComparer)
@@ -239,6 +254,7 @@ public class PackageRegistry
             },
             Description = "JSON for Modern C++",
         });
+        RegisterAlias("json", "nlohmann_json");
 
         Register(new PackageEntry
         {
