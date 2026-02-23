@@ -16,6 +16,8 @@ Abel is an opinionated C++ build runner built around CMake + Ninja.
 - `abel help`
 - `abel version`
 
+Configuration precedence for `build`/`run`: CLI (`--release/--debug/-c`) > `project.json` (`build.default_configuration`) > `Release`.
+
 ## Path Resolution
 
 - If no path is provided, Abel uses the current directory when `project.json` exists.

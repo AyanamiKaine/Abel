@@ -34,6 +34,9 @@ public class CmakeBuilder
     private readonly List<WrapperPackageDep> _wrapperPackages = [];
     private readonly List<(string Key, string Value)> _cmakeOptions = [];
     private readonly List<string> _linkLibraries = [];
+    private readonly BuildCompilerOptionsSet _projectCompileOptions = new();
+    private readonly Dictionary<string, BuildCompilerOptionsSet> _compileOptionsByConfiguration =
+        new(StringComparer.OrdinalIgnoreCase);
 
     // Testing
     private bool _enableTesting = false;
@@ -217,6 +220,36 @@ public class CmakeBuilder
         return this;
     }
 
+    public CmakeBuilder AddProjectCompileOptions(BuildCompilerOptionsConfig options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+
+        AddDistinctOptions(_projectCompileOptions.Common, options.Common);
+        AddDistinctOptions(_projectCompileOptions.Msvc, options.Msvc);
+        AddDistinctOptions(_projectCompileOptions.Gcc, options.Gcc);
+        AddDistinctOptions(_projectCompileOptions.Clang, options.Clang);
+        return this;
+    }
+
+    public CmakeBuilder AddProjectCompileOptionsForConfiguration(string configuration, BuildCompilerOptionsConfig options)
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+        ArgumentNullException.ThrowIfNull(options);
+
+        var normalizedConfiguration = NormalizeBuildConfiguration(configuration);
+        if (!_compileOptionsByConfiguration.TryGetValue(normalizedConfiguration, out var existing))
+        {
+            existing = new BuildCompilerOptionsSet();
+            _compileOptionsByConfiguration[normalizedConfiguration] = existing;
+        }
+
+        AddDistinctOptions(existing.Common, options.Common);
+        AddDistinctOptions(existing.Msvc, options.Msvc);
+        AddDistinctOptions(existing.Gcc, options.Gcc);
+        AddDistinctOptions(existing.Clang, options.Clang);
+        return this;
+    }
+
     public CmakeBuilder AddWrapperPackage(
         string name,
         string gitRepo,
@@ -340,6 +373,7 @@ public class CmakeBuilder
         WriteSources(w);
         WriteCompileFeatures(w);
         WriteDefaultCompilerFlags(w);
+        WriteProjectCompilerFlags(w);
         WriteLinkLibraries(w);
 
         if (_outputType == OutputType.library && _enableInstall)
@@ -371,6 +405,8 @@ public class CmakeBuilder
     /// </summary>
     public static CmakeBuilder FromProjectConfig(ProjectConfig config, PackageRegistry? registry = null)
     {
+        ArgumentNullException.ThrowIfNull(config);
+
         var builder = new CmakeBuilder()
             .SetProject(config.Name)
             .SetCxxStandard(config.CXXStandard)
@@ -385,6 +421,19 @@ public class CmakeBuilder
 
         if (config.Sources.TryGetValue("public", out var publicHdrs))
             builder.AddPublicHeaders(publicHdrs);
+
+        if (config.Build is not null)
+        {
+            builder.AddProjectCompileOptions(config.Build.CompileOptions);
+
+            foreach (var configuration in config.Build.Configurations)
+            {
+                if (configuration.Value is null)
+                    continue;
+
+                builder.AddProjectCompileOptionsForConfiguration(configuration.Key, configuration.Value.CompileOptions);
+            }
+        }
 
         var resolvedPackageVariants = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
 
@@ -583,6 +632,33 @@ public class CmakeBuilder
         }
 
         return output;
+    }
+
+    private static void AddDistinctOptions(List<string> destination, IEnumerable<string> source)
+    {
+        foreach (var option in source)
+        {
+            if (string.IsNullOrWhiteSpace(option))
+                continue;
+
+            if (!destination.Contains(option, StringComparer.Ordinal))
+                destination.Add(option);
+        }
+    }
+
+    private static string NormalizeBuildConfiguration(string configuration)
+    {
+        if (configuration.Equals("Debug", StringComparison.OrdinalIgnoreCase))
+            return "Debug";
+        if (configuration.Equals("Release", StringComparison.OrdinalIgnoreCase))
+            return "Release";
+        if (configuration.Equals("RelWithDebInfo", StringComparison.OrdinalIgnoreCase))
+            return "RelWithDebInfo";
+        if (configuration.Equals("MinSizeRel", StringComparison.OrdinalIgnoreCase))
+            return "MinSizeRel";
+
+        throw new InvalidOperationException(
+            $"Unsupported build configuration '{configuration}' in project.json. Use Debug, Release, RelWithDebInfo, or MinSizeRel.");
     }
 
     private static List<string> CollectTransitiveLinkTargets(
@@ -870,6 +946,106 @@ public class CmakeBuilder
         w.Line("endif()");
     }
 
+    private void WriteProjectCompilerFlags(CmakeWriter w)
+    {
+        if (!HasProjectCompilerFlags())
+            return;
+
+        w.Blank();
+        w.Line("# Extra compiler options from project.json build section.");
+        WriteProjectCompilerOptionsBlock(w, _projectCompileOptions, configuration: null);
+
+        foreach (var configuration in _compileOptionsByConfiguration.OrderBy(item => item.Key, StringComparer.Ordinal))
+            WriteProjectCompilerOptionsBlock(w, configuration.Value, configuration.Key);
+    }
+
+    private bool HasProjectCompilerFlags()
+    {
+        if (HasCompilerOptions(_projectCompileOptions))
+            return true;
+
+        foreach (var options in _compileOptionsByConfiguration.Values)
+        {
+            if (HasCompilerOptions(options))
+                return true;
+        }
+
+        return false;
+    }
+
+    private void WriteProjectCompilerOptionsBlock(
+        CmakeWriter w,
+        BuildCompilerOptionsSet options,
+        string? configuration)
+    {
+        var compileOptions = BuildCompileOptions(options, configuration);
+        if (compileOptions.Count == 0)
+            return;
+
+        w.Line($"target_compile_options({_projectName} PRIVATE");
+        foreach (var option in compileOptions)
+            w.Line($"    {option}");
+        w.Line(")");
+    }
+
+    private static List<string> BuildCompileOptions(BuildCompilerOptionsSet options, string? configuration)
+    {
+        var output = new List<string>();
+        AddCompilerOptions(output, options.Common, configuration, Array.Empty<string>());
+        AddCompilerOptions(output, options.Msvc, configuration, "MSVC");
+        AddCompilerOptions(output, options.Gcc, configuration, "GNU");
+        AddCompilerOptions(output, options.Clang, configuration, "Clang", "AppleClang");
+        return output;
+    }
+
+    private static void AddCompilerOptions(
+        List<string> output,
+        IEnumerable<string> options,
+        string? configuration,
+        params string[] compilerIds)
+    {
+        foreach (var option in options)
+        {
+            if (string.IsNullOrWhiteSpace(option))
+                continue;
+
+            var escapedOption = EscapeCmakeArgument(option);
+            var expression = BuildCompilerExpression(escapedOption, configuration, compilerIds);
+            output.Add(expression);
+        }
+    }
+
+    private static string BuildCompilerExpression(string option, string? configuration, params string[] compilerIds)
+    {
+        if (string.IsNullOrWhiteSpace(configuration) && compilerIds.Length == 0)
+            return option;
+
+        var conditions = new List<string>();
+
+        if (!string.IsNullOrWhiteSpace(configuration))
+            conditions.Add($"$<CONFIG:{configuration}>");
+
+        if (compilerIds.Length > 0)
+            conditions.Add($"$<CXX_COMPILER_ID:{string.Join(",", compilerIds)}>");
+
+        if (conditions.Count == 1)
+            return $"$<{conditions[0]}:{option}>";
+
+        return $"$<$<AND:{string.Join(",", conditions)}>:{option}>";
+    }
+
+    private static string EscapeCmakeArgument(string value)
+    {
+        var escaped = value.Replace("\\", "\\\\", StringComparison.Ordinal).Replace("\"", "\\\"", StringComparison.Ordinal);
+        return escaped.IndexOfAny([' ', ';']) >= 0 ? $"\"{escaped}\"" : escaped;
+    }
+
+    private static bool HasCompilerOptions(BuildCompilerOptionsSet options) =>
+        options.Common.Count > 0 ||
+        options.Msvc.Count > 0 ||
+        options.Gcc.Count > 0 ||
+        options.Clang.Count > 0;
+
     /// <summary>
     /// For executables: PRIVATE because nothing further links to an exe.
     /// For libraries: PUBLIC because if library A depends on library B, then anything
@@ -1001,6 +1177,13 @@ public class CmakeBuilder
         List<string> LinkLibraries,
         bool InterfaceOnly);
     private record TestTarget(string Name, List<string> Sources, List<string> LinkLibraries);
+    private sealed class BuildCompilerOptionsSet
+    {
+        public List<string> Common { get; } = [];
+        public List<string> Msvc { get; } = [];
+        public List<string> Gcc { get; } = [];
+        public List<string> Clang { get; } = [];
+    }
 }
 
 /// <summary>

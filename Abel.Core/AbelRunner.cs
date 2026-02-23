@@ -1,7 +1,6 @@
 using System.Diagnostics;
 using System.Text.Json;
 using CliWrap;
-using CliWrap.Buffered;
 
 namespace Abel.Core;
 
@@ -37,7 +36,7 @@ And possible warn the user of possible incompabilities.
 
 */
 
-public sealed class AbelRunner(bool verbose = false, string buildConfiguration = "Release") : IDisposable
+public sealed class AbelRunner(bool verbose = false, string? buildConfiguration = null) : IDisposable
 {
     private static readonly StringComparer NameComparer =
         OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
@@ -47,7 +46,9 @@ public sealed class AbelRunner(bool verbose = false, string buildConfiguration =
     private readonly Dictionary<string, ProjectConfig> Projects = new(PathComparer);
     private readonly PackageRegistry _registry = new();
     private readonly ChildProcessScope _childProcessScope = new();
-    private readonly string _buildConfiguration = NormalizeBuildConfiguration(buildConfiguration);
+    private readonly string? _requestedBuildConfiguration = NormalizeBuildConfigurationOrNull(buildConfiguration);
+    private bool _lastFailureIsCompilationError;
+    private string? _lastFailedActivity;
     private bool _disposed;
 
     private sealed record LocalProjectReference(string DirectoryPath, ProjectConfig Config);
@@ -86,10 +87,11 @@ public sealed class AbelRunner(bool verbose = false, string buildConfiguration =
 
             if (projectConfig.ProjectOutputType == OutputType.exe)
             {
-                var exePath = ResolveExecutablePath(projectFilePath, projectConfig.Name);
+                var effectiveBuildConfiguration = ResolveBuildConfiguration(projectConfig);
+                var exePath = ResolveExecutablePath(projectFilePath, projectConfig.Name, effectiveBuildConfiguration);
                 var exeDirectory = Path.GetDirectoryName(exePath) ?? Path.Combine(projectFilePath, "build");
 
-                Console.WriteLine($"  run {projectConfig.Name} ({_buildConfiguration})");
+                Console.WriteLine($"  run {projectConfig.Name} ({effectiveBuildConfiguration})");
 
                 var runSw = Stopwatch.StartNew();
 
@@ -132,10 +134,12 @@ public sealed class AbelRunner(bool verbose = false, string buildConfiguration =
             Directory.CreateDirectory(localInstallPrefix);
 
             var validatedConfig = ValidateProjectFiles(projectFilePath, projectConfig);
+            var effectiveBuildConfiguration = ResolveBuildConfiguration(validatedConfig);
 
             await BuildProjectWithDependencies(
                 projectFilePath,
                 validatedConfig,
+                effectiveBuildConfiguration,
                 localProjectIndex,
                 localInstallPrefix,
                 activeBuildStack: new HashSet<string>(PathComparer),
@@ -234,6 +238,7 @@ public sealed class AbelRunner(bool verbose = false, string buildConfiguration =
             CXXStandard = config.CXXStandard,
             ProjectOutputType = config.ProjectOutputType,
             Tests = new TestsConfig { Files = validTestFiles },
+            Build = config.Build,
         };
 
         foreach (var dep in config.Dependencies)
@@ -248,6 +253,7 @@ public sealed class AbelRunner(bool verbose = false, string buildConfiguration =
     private async Task BuildProjectWithDependencies(
         string projectFilePath,
         ProjectConfig projectConfig,
+        string buildConfiguration,
         IReadOnlyDictionary<string, LocalProjectReference> localProjectIndex,
         string localInstallPrefix,
         ISet<string> activeBuildStack,
@@ -285,6 +291,7 @@ public sealed class AbelRunner(bool verbose = false, string buildConfiguration =
                 await BuildProjectWithDependencies(
                     localDependency.DirectoryPath,
                     validatedDependencyConfig,
+                    buildConfiguration,
                     localProjectIndex,
                     localInstallPrefix,
                     activeBuildStack,
@@ -297,15 +304,18 @@ public sealed class AbelRunner(bool verbose = false, string buildConfiguration =
 
             try
             {
-                await BuildProject(projectFilePath, projectConfig, localInstallPrefix).ConfigureAwait(false);
+                await BuildProject(projectFilePath, projectConfig, localInstallPrefix, buildConfiguration).ConfigureAwait(false);
 
                 if (projectConfig.ProjectOutputType == OutputType.library)
-                    await InstallProject(projectFilePath, localInstallPrefix, projectConfig.Name).ConfigureAwait(false);
+                    await InstallProject(projectFilePath, localInstallPrefix, projectConfig.Name, buildConfiguration).ConfigureAwait(false);
             }
             catch (CliWrap.Exceptions.CommandExecutionException ex)
             {
                 if (Verbose)
                     Console.WriteLine(ex.Message);
+
+                if (!ShouldRetryAfterFailure())
+                    throw;
 
                 Console.ForegroundColor = ConsoleColor.Yellow;
                 Console.WriteLine($"  [retry] {projectConfig.Name} - cleaning and rebuilding...");
@@ -313,10 +323,10 @@ public sealed class AbelRunner(bool verbose = false, string buildConfiguration =
 
                 CleanBuild(projectFilePath);
 
-                await BuildProject(projectFilePath, projectConfig, localInstallPrefix).ConfigureAwait(false);
+                await BuildProject(projectFilePath, projectConfig, localInstallPrefix, buildConfiguration).ConfigureAwait(false);
 
                 if (projectConfig.ProjectOutputType == OutputType.library)
-                    await InstallProject(projectFilePath, localInstallPrefix, projectConfig.Name).ConfigureAwait(false);
+                    await InstallProject(projectFilePath, localInstallPrefix, projectConfig.Name, buildConfiguration).ConfigureAwait(false);
             }
 
             projectSw.Stop();
@@ -338,7 +348,8 @@ public sealed class AbelRunner(bool verbose = false, string buildConfiguration =
     private async Task BuildProject(
         string projectFilePath,
         ProjectConfig projectConfig,
-        string localInstallPrefix)
+        string localInstallPrefix,
+        string buildConfiguration)
     {
         var registryDependencyPlan = BuildRegistryDependencyPlan(projectConfig);
         if (registryDependencyPlan.Count > 0)
@@ -357,13 +368,13 @@ public sealed class AbelRunner(bool verbose = false, string buildConfiguration =
             "-S", ".",
             "-B", "build",
             "-G", "Ninja",
-            $"-DCMAKE_BUILD_TYPE={_buildConfiguration}",
+            $"-DCMAKE_BUILD_TYPE={buildConfiguration}",
             "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
             $"-DCMAKE_PREFIX_PATH={localInstallPrefix}"
         };
 
         var buildCachePath = Path.Combine(projectFilePath, "build", "CMakeCache.txt");
-        var needsConfigure = cmakeListsChanged || !IsConfigureUpToDate(buildCachePath, _buildConfiguration);
+        var needsConfigure = cmakeListsChanged || !IsConfigureUpToDate(buildCachePath, buildConfiguration);
 
         if (needsConfigure)
         {
@@ -381,17 +392,17 @@ public sealed class AbelRunner(bool verbose = false, string buildConfiguration =
 
         await ExecuteCommandAsync(
             "cmake",
-            ["--build", "build", "--config", _buildConfiguration],
+            ["--build", "build", "--config", buildConfiguration],
             projectFilePath,
             $"build {projectConfig.Name}",
             ParseBuildProgress).ConfigureAwait(false);
     }
 
-    private async Task InstallProject(string projectFilePath, string localInstallPrefix, string projectName)
+    private async Task InstallProject(string projectFilePath, string localInstallPrefix, string projectName, string buildConfiguration)
     {
         await ExecuteCommandAsync(
             "cmake",
-            ["--install", "build", "--config", _buildConfiguration, "--prefix", localInstallPrefix],
+            ["--install", "build", "--config", buildConfiguration, "--prefix", localInstallPrefix],
             projectFilePath,
             $"install {projectName}",
             ParseInstallProgress).ConfigureAwait(false);
@@ -522,18 +533,58 @@ public sealed class AbelRunner(bool verbose = false, string buildConfiguration =
         return false;
     }
 
-    private string ResolveExecutablePath(string projectFilePath, string projectName)
+    private bool ShouldRetryAfterFailure()
+    {
+        if (_lastFailureIsCompilationError)
+            return false;
+
+        if (string.IsNullOrWhiteSpace(_lastFailedActivity))
+            return true;
+
+        return !_lastFailedActivity.StartsWith("build ", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private string ResolveBuildConfiguration(ProjectConfig projectConfig)
+    {
+        if (_requestedBuildConfiguration is not null)
+            return _requestedBuildConfiguration;
+
+        var configuredValue = projectConfig.Build?.DefaultConfiguration;
+        if (string.IsNullOrWhiteSpace(configuredValue))
+            return "Release";
+
+        try
+        {
+            return NormalizeBuildConfiguration(configuredValue);
+        }
+        catch (InvalidOperationException)
+        {
+            throw new InvalidOperationException(
+                $"Project '{projectConfig.Name}' has unsupported build.default_configuration '{configuredValue}'. " +
+                "Use Debug, Release, RelWithDebInfo, or MinSizeRel.");
+        }
+    }
+
+    private string ResolveExecutablePath(string projectFilePath, string projectName, string buildConfiguration)
     {
         var executableName = projectName + (OperatingSystem.IsWindows() ? ".exe" : "");
         var singleConfigPath = Path.Combine(projectFilePath, "build", executableName);
         if (File.Exists(singleConfigPath))
             return singleConfigPath;
 
-        var multiConfigPath = Path.Combine(projectFilePath, "build", _buildConfiguration, executableName);
+        var multiConfigPath = Path.Combine(projectFilePath, "build", buildConfiguration, executableName);
         if (File.Exists(multiConfigPath))
             return multiConfigPath;
 
         return singleConfigPath;
+    }
+
+    private static string? NormalizeBuildConfigurationOrNull(string? buildConfiguration)
+    {
+        if (string.IsNullOrWhiteSpace(buildConfiguration))
+            return null;
+
+        return NormalizeBuildConfiguration(buildConfiguration);
     }
 
     private static string NormalizeBuildConfiguration(string buildConfiguration)
@@ -571,6 +622,9 @@ public sealed class AbelRunner(bool verbose = false, string buildConfiguration =
         string activityLabel,
         Func<string, string?>? progressParser = null)
     {
+        _lastFailureIsCompilationError = false;
+        _lastFailedActivity = null;
+
         if (Verbose)
         {
             var verboseCommand = Cli.Wrap(fileName)
@@ -579,12 +633,26 @@ public sealed class AbelRunner(bool verbose = false, string buildConfiguration =
                 .WithStandardOutputPipe(PipeTarget.ToDelegate(Console.WriteLine))
                 .WithStandardErrorPipe(PipeTarget.ToDelegate(Console.Error.WriteLine));
 
-            await ExecuteManagedAsync(verboseCommand).ConfigureAwait(false);
+            try
+            {
+                await ExecuteManagedAsync(verboseCommand).ConfigureAwait(false);
+            }
+            catch (CliWrap.Exceptions.CommandExecutionException)
+            {
+                _lastFailedActivity = activityLabel;
+                throw;
+            }
+
             return;
         }
 
         var activity = new ActivityState();
-        var outputPipe = CreateActivityPipe(progressParser, activity, emitDetails: Console.IsOutputRedirected);
+        var outputBuffer = new CommandOutputBuffer();
+        var outputPipe = CreateActivityPipe(
+            progressParser,
+            activity,
+            emitDetails: Console.IsOutputRedirected,
+            outputBuffer);
 
         var command = Cli.Wrap(fileName)
             .WithArguments(arguments)
@@ -592,27 +660,43 @@ public sealed class AbelRunner(bool verbose = false, string buildConfiguration =
             .WithStandardOutputPipe(outputPipe)
             .WithStandardErrorPipe(outputPipe);
 
-        if (Console.IsOutputRedirected)
+        try
         {
-            Console.WriteLine($"  {activityLabel}...");
-            await ExecuteManagedAsync(command).ConfigureAwait(false);
-            return;
-        }
+            if (Console.IsOutputRedirected)
+            {
+                Console.WriteLine($"  {activityLabel}...");
+                await ExecuteManagedAsync(command).ConfigureAwait(false);
+                return;
+            }
 
-        await RunWithSpinnerAsync(activityLabel, activity, command).ConfigureAwait(false);
+            await RunWithSpinnerAsync(activityLabel, activity, command).ConfigureAwait(false);
+        }
+        catch (CliWrap.Exceptions.CommandExecutionException)
+        {
+            _lastFailedActivity = activityLabel;
+            _lastFailureIsCompilationError = outputBuffer.HasCompilationError();
+            PrintFailureDiagnostics(activityLabel, outputBuffer);
+
+            throw;
+        }
     }
 
     private static PipeTarget CreateActivityPipe(
         Func<string, string?>? progressParser,
         ActivityState activity,
-        bool emitDetails)
+        bool emitDetails,
+        CommandOutputBuffer? outputBuffer = null)
     {
-        if (progressParser is null)
+        if (progressParser is null && outputBuffer is null)
             return PipeTarget.Null;
 
         return PipeTarget.ToDelegate(line =>
         {
             if (string.IsNullOrWhiteSpace(line))
+                return;
+
+            outputBuffer?.Add(line);
+            if (progressParser is null)
                 return;
 
             var detail = progressParser(line);
@@ -624,6 +708,20 @@ public sealed class AbelRunner(bool verbose = false, string buildConfiguration =
 
             Console.WriteLine($"    > {detail}");
         });
+    }
+
+    private static void PrintFailureDiagnostics(string activityLabel, CommandOutputBuffer outputBuffer)
+    {
+        var diagnostics = outputBuffer.GetDiagnostics();
+        if (diagnostics.Count == 0)
+            return;
+
+        Console.ForegroundColor = ConsoleColor.Red;
+        Console.WriteLine($"  diagnostics {activityLabel}:");
+        Console.ResetColor();
+
+        foreach (var line in diagnostics)
+            Console.WriteLine($"    {line}");
     }
 
     private async Task RunWithSpinnerAsync(string activityLabel, ActivityState activity, Command command)
@@ -932,6 +1030,103 @@ public sealed class AbelRunner(bool verbose = false, string buildConfiguration =
         }
 
         return string.IsNullOrWhiteSpace(normalized) ? null : normalized;
+    }
+
+    private sealed class CommandOutputBuffer
+    {
+        private const int MaxStoredLines = 600;
+        private const int MaxDiagnosticLines = 60;
+        private readonly Queue<string> _lines = new(MaxStoredLines);
+        private readonly Lock _gate = new();
+
+        public void Add(string line)
+        {
+            var normalized = line.TrimEnd();
+            if (string.IsNullOrWhiteSpace(normalized))
+                return;
+
+            lock (_gate)
+            {
+                if (_lines.Count >= MaxStoredLines)
+                    _lines.Dequeue();
+
+                _lines.Enqueue(normalized);
+            }
+        }
+
+        public bool HasCompilationError()
+        {
+            lock (_gate)
+                return _lines.Any(IsCompilationErrorLine);
+        }
+
+        public List<string> GetDiagnostics()
+        {
+            lock (_gate)
+            {
+                var snapshot = _lines.ToList();
+                var selected = new List<string>();
+                var seen = new HashSet<string>(StringComparer.Ordinal);
+
+                for (var i = 0; i < snapshot.Count; i++)
+                {
+                    var line = snapshot[i];
+                    if (IsFailedLine(line))
+                    {
+                        AddUnique(selected, seen, line);
+                        AddFailureContext(snapshot, i, selected, seen);
+                    }
+
+                    if (IsDiagnosticLine(line))
+                        AddUnique(selected, seen, line);
+                }
+
+                if (selected.Count == 0)
+                {
+                    foreach (var line in snapshot.TakeLast(12))
+                        AddUnique(selected, seen, line);
+                }
+
+                if (selected.Count <= MaxDiagnosticLines)
+                    return selected;
+
+                return selected.TakeLast(MaxDiagnosticLines).ToList();
+            }
+        }
+
+        private static void AddFailureContext(
+            List<string> snapshot,
+            int failedLineIndex,
+            List<string> output,
+            HashSet<string> seen)
+        {
+            var contextEnd = Math.Min(snapshot.Count - 1, failedLineIndex + 3);
+            for (var index = failedLineIndex + 1; index <= contextEnd; index++)
+                AddUnique(output, seen, snapshot[index]);
+        }
+
+        private static void AddUnique(List<string> output, HashSet<string> seen, string line)
+        {
+            if (seen.Add(line))
+                output.Add(line);
+        }
+
+        private static bool IsFailedLine(string line) =>
+            line.StartsWith("FAILED:", StringComparison.OrdinalIgnoreCase) ||
+            line.Contains(" FAILED:", StringComparison.OrdinalIgnoreCase);
+
+        private static bool IsCompilationErrorLine(string line) =>
+            line.Contains(": error:", StringComparison.OrdinalIgnoreCase) ||
+            line.Contains(" error C", StringComparison.OrdinalIgnoreCase) ||
+            line.Contains("fatal error", StringComparison.OrdinalIgnoreCase) ||
+            IsFailedLine(line);
+
+        private static bool IsDiagnosticLine(string line) =>
+            IsCompilationErrorLine(line) ||
+            line.Contains(": warning:", StringComparison.OrdinalIgnoreCase) ||
+            line.Contains(" warning C", StringComparison.OrdinalIgnoreCase) ||
+            line.Contains("undefined reference", StringComparison.OrdinalIgnoreCase) ||
+            line.Contains("ld: error:", StringComparison.OrdinalIgnoreCase);
     }
 
     private sealed class ActivityState

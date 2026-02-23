@@ -91,9 +91,10 @@ internal static class Program
         Console.WriteLine();
         Console.WriteLine("Options:");
         Console.WriteLine("  -v, --verbose   Enable verbose output");
-        Console.WriteLine("  --release       Use Release configuration (default for build/run)");
+        Console.WriteLine("  --release       Use Release configuration");
         Console.WriteLine("  --debug         Use Debug configuration");
         Console.WriteLine("  -c, --configuration <name>   Build config: Debug|Release|RelWithDebInfo|MinSizeRel");
+        Console.WriteLine("                 Default: project.json build.default_configuration, else Release");
         Console.WriteLine();
     }
 
@@ -234,7 +235,7 @@ internal static class Program
         var kind = ParseCommandKind(first);
 
         var verbose = false;
-        var buildConfiguration = "Release";
+        string? buildConfiguration = null;
         var paths = new List<string>();
 
         for (var i = 1; i < args.Length; i++)
@@ -262,7 +263,7 @@ internal static class Program
         string[] args,
         ref int index,
         ref bool verbose,
-        ref string buildConfiguration,
+        ref string? buildConfiguration,
         out ParsedCommand? earlyExit)
     {
         earlyExit = null;
@@ -490,9 +491,9 @@ internal static class Program
         CommandKind Kind,
         bool Verbose,
         IReadOnlyList<string> Arguments,
-        string BuildConfiguration)
+        string? BuildConfiguration)
     {
-        public static ParsedCommand Help() => new(CommandKind.Help, false, Array.Empty<string>(), "Release");
-        public static ParsedCommand Version() => new(CommandKind.Version, false, Array.Empty<string>(), "Release");
+        public static ParsedCommand Help() => new(CommandKind.Help, false, Array.Empty<string>(), null);
+        public static ParsedCommand Version() => new(CommandKind.Version, false, Array.Empty<string>(), null);
     }
 }

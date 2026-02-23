@@ -88,6 +88,41 @@ Executable:
 }
 ```
 
+With build settings:
+
+```json
+{
+	"name": "game",
+	"output_type": "exe",
+	"cxx_standard": 23,
+	"dependencies": [],
+	"build": {
+		"default_configuration": "RelWithDebInfo",
+		"compile_options": {
+			"common": ["-fno-omit-frame-pointer"],
+			"msvc": ["/utf-8"],
+			"gcc": [],
+			"clang": []
+		},
+		"configurations": {
+			"Release": {
+				"compile_options": {
+					"common": ["-march=native"],
+					"msvc": ["/GL"],
+					"gcc": ["-flto"],
+					"clang": ["-flto"]
+				}
+			}
+		}
+	}
+}
+```
+
+Notes:
+- `build.default_configuration` is used when `abel build/run` is called without `--release`, `--debug`, or `--configuration`.
+- CLI configuration flags always override `project.json`.
+- Configuration keys under `build.configurations` support: `Debug`, `Release`, `RelWithDebInfo`, `MinSizeRel`.
+
 Module library:
 
 ```json

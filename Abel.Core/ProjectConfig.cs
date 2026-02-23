@@ -25,6 +25,52 @@ public class TestsConfig
     public IList<string> Files { get; set; } = new List<string>();
 }
 
+public class BuildCompilerOptionsConfig
+{
+    [JsonPropertyName("common")]
+    [JsonObjectCreationHandling(JsonObjectCreationHandling.Populate)]
+    public IList<string> Common { get; } = new List<string>();
+
+    [JsonPropertyName("msvc")]
+    [JsonObjectCreationHandling(JsonObjectCreationHandling.Populate)]
+    public IList<string> Msvc { get; } = new List<string>();
+
+    [JsonPropertyName("gcc")]
+    [JsonObjectCreationHandling(JsonObjectCreationHandling.Populate)]
+    public IList<string> Gcc { get; } = new List<string>();
+
+    [JsonPropertyName("clang")]
+    [JsonObjectCreationHandling(JsonObjectCreationHandling.Populate)]
+    public IList<string> Clang { get; } = new List<string>();
+}
+
+public class BuildConfigurationConfig
+{
+    [JsonPropertyName("compile_options")]
+    public BuildCompilerOptionsConfig CompileOptions { get; set; } = new();
+}
+
+public class BuildConfig
+{
+    [JsonPropertyName("default_configuration")]
+    public string? DefaultConfiguration { get; set; }
+
+    [JsonPropertyName("compile_options")]
+    public BuildCompilerOptionsConfig CompileOptions { get; set; } = new();
+
+    [JsonObjectCreationHandling(JsonObjectCreationHandling.Populate)]
+    [JsonPropertyName("configurations")]
+    public IDictionary<string, BuildConfigurationConfig> Configurations { get; }
+
+    public BuildConfig()
+    {
+        if (OperatingSystem.IsLinux())
+            Configurations = new Dictionary<string, BuildConfigurationConfig>(StringComparer.Ordinal);
+        else
+            Configurations = new Dictionary<string, BuildConfigurationConfig>(StringComparer.OrdinalIgnoreCase);
+    }
+}
+
 public class ProjectConfig
 {
     [JsonPropertyName("name")]
@@ -48,6 +94,10 @@ public class ProjectConfig
 
     [JsonPropertyName("tests")]
     public TestsConfig Tests { get; set; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    [JsonPropertyName("build")]
+    public BuildConfig? Build { get; set; }
 
     public ProjectConfig()
     {
