@@ -63,6 +63,14 @@ cd my_module
 abel build
 ```
 
+Create a local module inside an existing app and wire it as dependency:
+
+```powershell
+cd my_app
+abel module gameplay
+abel build
+```
+
 ## Commands
 
 - `abel build [paths...] [--release|--debug|--configuration <name>] [--verbose]`
@@ -74,6 +82,9 @@ abel build
 - `abel init <name> [--type exe|module]`
 - `abel init --list-templates`
 - `abel add <dep...> [--project <path>]`
+- `abel module <name> [--project <path>] [--dir <relative-path>]`
+
+For `abel module`, `--project` is optional. When omitted, Abel searches upward from the current directory for a parent `project.json` (preferring an executable project).
 
 ## project.json
 

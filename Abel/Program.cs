@@ -29,6 +29,7 @@ internal static class Program
                 CommandKind.Info => RunInfoCommand(command),
                 CommandKind.Init => RunInitCommand(command),
                 CommandKind.Add => RunAddCommand(command),
+                CommandKind.Module => RunModuleCommand(command),
                 _ => ExitUsageError
             };
         }
@@ -69,6 +70,7 @@ internal static class Program
         PrintRegistryExamples();
         PrintInitExamples();
         PrintAddExamples();
+        PrintModuleExamples();
         return ExitSuccess;
     }
 
@@ -86,6 +88,7 @@ internal static class Program
         Console.WriteLine("  info       Show detailed package metadata");
         Console.WriteLine("  init       Create a new Abel project from a template");
         Console.WriteLine("  add        Add dependency entries to project.json");
+        Console.WriteLine("  module     Create a local module and add it as dependency");
         Console.WriteLine("  help       Show this help");
         Console.WriteLine("  version    Show tool version");
         Console.WriteLine();
@@ -132,6 +135,15 @@ internal static class Program
         Console.WriteLine("  - abel add sdl3");
         Console.WriteLine("  - abel add imgui/sdl3_renderer flecs");
         Console.WriteLine("  - abel add --project ./Game sdl3_image");
+        Console.WriteLine();
+    }
+
+    private static void PrintModuleExamples()
+    {
+        Console.WriteLine("Module examples:");
+        Console.WriteLine("  - abel module gameplay");
+        Console.WriteLine("  - abel module physics --project ./Game");
+        Console.WriteLine("  - abel module ui --dir modules/ui");
     }
 
     private static int PrintVersionAndReturnSuccess()
@@ -221,6 +233,12 @@ internal static class Program
         return result ? ExitSuccess : ExitUsageError;
     }
 
+    private static int RunModuleCommand(ParsedCommand command)
+    {
+        var result = ModuleScaffolder.TryCreateModule(command.Arguments, command.Verbose);
+        return result ? ExitSuccess : ExitUsageError;
+    }
+
     private static ParsedCommand ParseCommand(string[] args)
     {
         if (args.Length == 0)
@@ -249,7 +267,7 @@ internal static class Program
                 continue;
             }
 
-            if (token.StartsWith('-') && kind != CommandKind.Init && kind != CommandKind.Add)
+            if (token.StartsWith('-') && kind != CommandKind.Init && kind != CommandKind.Add && kind != CommandKind.Module)
                 throw new InvalidOperationException($"Unknown option '{token}'.");
 
             paths.Add(token);
@@ -364,6 +382,9 @@ internal static class Program
             return CommandKind.Init;
         if (commandText.Equals("add", StringComparison.OrdinalIgnoreCase))
             return CommandKind.Add;
+        if (commandText.Equals("module", StringComparison.OrdinalIgnoreCase) ||
+            commandText.Equals("add-module", StringComparison.OrdinalIgnoreCase))
+            return CommandKind.Module;
         if (commandText.Equals("help", StringComparison.OrdinalIgnoreCase))
             return CommandKind.Help;
         if (commandText.Equals("version", StringComparison.OrdinalIgnoreCase))
@@ -485,6 +506,7 @@ internal static class Program
         Info,
         Init,
         Add,
+        Module,
     }
 
     private sealed record ParsedCommand(
