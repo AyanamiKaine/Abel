@@ -37,7 +37,7 @@ And possible warn the user of possible incompabilities.
 
 */
 
-public class AbelRunner(bool verbose = false)
+public sealed class AbelRunner(bool verbose = false) : IDisposable
 {
     private static readonly StringComparer NameComparer =
         OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
@@ -46,10 +46,29 @@ public class AbelRunner(bool verbose = false)
 
     private readonly Dictionary<string, ProjectConfig> Projects = new(PathComparer);
     private readonly PackageRegistry _registry = new();
+    private readonly ChildProcessScope _childProcessScope = new();
+    private bool _disposed;
 
     private sealed record LocalProjectReference(string DirectoryPath, ProjectConfig Config);
 
     public bool Verbose { get; set; } = verbose;
+
+    public void Dispose()
+    {
+        Dispose(disposing: true);
+        GC.SuppressFinalize(this);
+    }
+
+    private void Dispose(bool disposing)
+    {
+        if (_disposed)
+            return;
+
+        if (disposing)
+            _childProcessScope.Dispose();
+
+        _disposed = true;
+    }
 
     /// <summary>
     /// Running a project, by default we are expecting a main.cpp file to exist
@@ -75,13 +94,14 @@ public class AbelRunner(bool verbose = false)
 
                 var runSw = Stopwatch.StartNew();
 
-                await Cli.Wrap(exePath)
+                var runCommand = Cli.Wrap(exePath)
                     .WithArguments(Array.Empty<string>())
                     .WithWorkingDirectory(Path.Combine(projectFilePath, "build"))
                     .WithStandardOutputPipe(PipeTarget.ToDelegate(Console.WriteLine))
                     .WithStandardErrorPipe(PipeTarget.ToDelegate(Console.Error.WriteLine))
-                    .WithValidation(CommandResultValidation.None)
-                    .ExecuteBufferedAsync();
+                    .WithValidation(CommandResultValidation.None);
+
+                await ExecuteManagedAsync(runCommand).ConfigureAwait(false);
 
                 runSw.Stop();
 
@@ -505,12 +525,13 @@ public class AbelRunner(bool verbose = false)
     {
         if (Verbose)
         {
-            await Cli.Wrap(fileName)
+            var verboseCommand = Cli.Wrap(fileName)
                 .WithArguments(arguments)
                 .WithWorkingDirectory(workingDirectory)
                 .WithStandardOutputPipe(PipeTarget.ToDelegate(Console.WriteLine))
-                .WithStandardErrorPipe(PipeTarget.ToDelegate(Console.Error.WriteLine))
-                .ExecuteBufferedAsync().ConfigureAwait(false);
+                .WithStandardErrorPipe(PipeTarget.ToDelegate(Console.Error.WriteLine));
+
+            await ExecuteManagedAsync(verboseCommand).ConfigureAwait(false);
             return;
         }
 
@@ -526,7 +547,7 @@ public class AbelRunner(bool verbose = false)
         if (Console.IsOutputRedirected)
         {
             Console.WriteLine($"  {activityLabel}...");
-            await command.ExecuteBufferedAsync().ConfigureAwait(false);
+            await ExecuteManagedAsync(command).ConfigureAwait(false);
             return;
         }
 
@@ -557,7 +578,7 @@ public class AbelRunner(bool verbose = false)
         });
     }
 
-    private static async Task RunWithSpinnerAsync(string activityLabel, ActivityState activity, Command command)
+    private async Task RunWithSpinnerAsync(string activityLabel, ActivityState activity, Command command)
     {
         var timer = Stopwatch.StartNew();
         using var cts = new CancellationTokenSource();
@@ -565,7 +586,7 @@ public class AbelRunner(bool verbose = false)
 
         try
         {
-            await command.ExecuteBufferedAsync().ConfigureAwait(false);
+            await ExecuteManagedAsync(command).ConfigureAwait(false);
             await cts.CancelAsync().ConfigureAwait(false);
             await WaitForSpinnerStop(spinnerTask).ConfigureAwait(false);
 
@@ -579,6 +600,16 @@ public class AbelRunner(bool verbose = false)
             WriteCompletedLine($"  [fail] {activityLabel} ({FormatElapsed(timer.Elapsed)})");
             throw;
         }
+    }
+
+    private async Task ExecuteManagedAsync(Command command)
+    {
+        await command.ExecuteAsync(
+                configureStartInfo: _ => { },
+                configureProcess: process => _childProcessScope.TryAttach(process),
+                forcefulCancellationToken: CancellationToken.None,
+                gracefulCancellationToken: CancellationToken.None)
+            .ConfigureAwait(false);
     }
 
     private static async Task SpinAsync(string activityLabel, ActivityState activity, Stopwatch timer, CancellationToken token)

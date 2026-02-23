@@ -149,14 +149,27 @@ internal static class Program
         if (projectDirectories.Count == 0)
             throw new InvalidOperationException("No project directories found.");
 
-        var runner = new AbelRunner(command.Verbose);
+        using var runner = new AbelRunner(command.Verbose);
+        EventHandler onProcessExit = (_, _) => runner.Dispose();
+        ConsoleCancelEventHandler onCancelKeyPress = (_, _) => runner.Dispose();
+        AppDomain.CurrentDomain.ProcessExit += onProcessExit;
+        Console.CancelKeyPress += onCancelKeyPress;
+
         foreach (var projectDirectory in projectDirectories)
             runner.ParseFolder(projectDirectory);
 
-        if (run)
-            await runner.Run().ConfigureAwait(false);
-        else
-            await runner.Build().ConfigureAwait(false);
+        try
+        {
+            if (run)
+                await runner.Run().ConfigureAwait(false);
+            else
+                await runner.Build().ConfigureAwait(false);
+        }
+        finally
+        {
+            Console.CancelKeyPress -= onCancelKeyPress;
+            AppDomain.CurrentDomain.ProcessExit -= onProcessExit;
+        }
 
         return ExitSuccess;
     }
