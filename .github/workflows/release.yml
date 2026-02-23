@@ -63,7 +63,6 @@ jobs:
             const repo = context.repo.repo;
             const sha = context.sha;
             const isTagRef = (context.ref ?? "").startsWith("refs/tags/");
-            const expectedBranch = context.payload.repository?.default_branch ?? "main";
             const pollIntervalMs = 20 * 1000;
             const timeoutMs = 60 * 60 * 1000;
             const deadline = Date.now() + timeoutMs;
@@ -83,7 +82,6 @@ jobs:
               });
 
               const matchingRuns = response.data.workflow_runs
-                .filter(run => run.event === "push" && run.head_branch === expectedBranch)
                 .sort((a, b) => {
                   const aTime = new Date(a.created_at).getTime();
                   const bTime = new Date(b.created_at).getTime();
@@ -91,34 +89,41 @@ jobs:
                 });
 
               if (matchingRuns.length > 0) {
-                const run = matchingRuns[0];
-                core.notice(
-                  `CI run #${run.run_number} (${run.html_url}) status=${run.status}, conclusion=${run.conclusion ?? "n/a"}.`
+                const successfulRun = matchingRuns.find(run =>
+                  run.status === "completed" && run.conclusion === "success"
                 );
 
-                if (run.status === "completed") {
-                  if (run.conclusion === "success") {
-                    core.notice(
-                      `Using successful CI run #${run.run_number} (${run.html_url}) for commit ${sha}.`
-                    );
-                    return;
-                  }
+                if (successfulRun) {
+                  core.notice(
+                    `Using successful CI run #${successfulRun.run_number} (${successfulRun.html_url}) for commit ${sha}.`
+                  );
+                  return;
+                }
 
+                const latestRun = matchingRuns[0];
+                core.notice(
+                  `Latest CI run #${latestRun.run_number} (${latestRun.html_url}) status=${latestRun.status}, conclusion=${latestRun.conclusion ?? "n/a"}.`
+                );
+
+                const hasPendingRun = matchingRuns.some(run => run.status !== "completed");
+                if (!hasPendingRun) {
+                  const failedRun = matchingRuns.find(run => run.conclusion && run.conclusion !== "success");
                   core.setFailed(
-                    `CI run #${run.run_number} (${run.html_url}) finished with conclusion '${run.conclusion}'. ` +
-                    `Publish is blocked.`
+                    `No successful CI run found for commit ${sha}. ` +
+                    `Latest completed run #${failedRun?.run_number ?? latestRun.run_number} ` +
+                    `(${failedRun?.html_url ?? latestRun.html_url}) concluded '${failedRun?.conclusion ?? latestRun.conclusion ?? "unknown"}'.`
                   );
                   return;
                 }
               } else {
                 core.notice(
-                  `No CI run for commit ${sha} on '${expectedBranch}' yet. Waiting...`
+                  `No CI run for commit ${sha} yet. Waiting...`
                 );
               }
 
               if (Date.now() >= deadline) {
                 core.setFailed(
-                  `Timed out waiting for a successful 'ci.yml' run for commit ${sha} on branch '${expectedBranch}'.`
+                  `Timed out waiting for a successful 'ci.yml' run for commit ${sha}.`
                 );
                 return;
               }
