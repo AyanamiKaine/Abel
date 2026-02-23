@@ -89,7 +89,8 @@ public sealed class AbelRunner(bool verbose = false, string? buildConfiguration 
             {
                 var effectiveBuildConfiguration = ResolveBuildConfiguration(projectConfig);
                 var exePath = ResolveExecutablePath(projectFilePath, projectConfig.Name, effectiveBuildConfiguration);
-                var exeDirectory = Path.GetDirectoryName(exePath) ?? Path.Combine(projectFilePath, "build");
+                var exeDirectory = Path.GetDirectoryName(exePath) ??
+                                   Path.Combine(projectFilePath, GetBuildDirectoryPath(effectiveBuildConfiguration));
 
                 Console.WriteLine($"  run {projectConfig.Name} ({effectiveBuildConfiguration})");
 
@@ -321,7 +322,7 @@ public sealed class AbelRunner(bool verbose = false, string? buildConfiguration 
                 Console.WriteLine($"  [retry] {projectConfig.Name} - cleaning and rebuilding...");
                 Console.ResetColor();
 
-                CleanBuild(projectFilePath);
+                CleanBuild(projectFilePath, buildConfiguration);
 
                 await BuildProject(projectFilePath, projectConfig, localInstallPrefix, buildConfiguration).ConfigureAwait(false);
 
@@ -351,6 +352,8 @@ public sealed class AbelRunner(bool verbose = false, string? buildConfiguration 
         string localInstallPrefix,
         string buildConfiguration)
     {
+        var buildDirectory = GetBuildDirectoryPath(buildConfiguration);
+
         var registryDependencyPlan = BuildRegistryDependencyPlan(projectConfig);
         if (registryDependencyPlan.Count > 0)
             WriteProgressLine($"  step {projectConfig.Name}: fetch/build dependencies {FormatDependencyList(registryDependencyPlan)}");
@@ -366,14 +369,14 @@ public sealed class AbelRunner(bool verbose = false, string? buildConfiguration 
         var configureArguments = new[]
         {
             "-S", ".",
-            "-B", "build",
+            "-B", buildDirectory,
             "-G", "Ninja",
             $"-DCMAKE_BUILD_TYPE={buildConfiguration}",
             "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
             $"-DCMAKE_PREFIX_PATH={localInstallPrefix}"
         };
 
-        var buildCachePath = Path.Combine(projectFilePath, "build", "CMakeCache.txt");
+        var buildCachePath = Path.Combine(projectFilePath, buildDirectory, "CMakeCache.txt");
         var needsConfigure = cmakeListsChanged || !IsConfigureUpToDate(buildCachePath, buildConfiguration);
 
         if (needsConfigure)
@@ -392,7 +395,7 @@ public sealed class AbelRunner(bool verbose = false, string? buildConfiguration 
 
         await ExecuteCommandAsync(
             "cmake",
-            ["--build", "build", "--config", buildConfiguration],
+            ["--build", buildDirectory, "--config", buildConfiguration],
             projectFilePath,
             $"build {projectConfig.Name}",
             ParseBuildProgress).ConfigureAwait(false);
@@ -400,9 +403,11 @@ public sealed class AbelRunner(bool verbose = false, string? buildConfiguration 
 
     private async Task InstallProject(string projectFilePath, string localInstallPrefix, string projectName, string buildConfiguration)
     {
+        var buildDirectory = GetBuildDirectoryPath(buildConfiguration);
+
         await ExecuteCommandAsync(
             "cmake",
-            ["--install", "build", "--config", buildConfiguration, "--prefix", localInstallPrefix],
+            ["--install", buildDirectory, "--config", buildConfiguration, "--prefix", localInstallPrefix],
             projectFilePath,
             $"install {projectName}",
             ParseInstallProgress).ConfigureAwait(false);
@@ -508,12 +513,15 @@ public sealed class AbelRunner(bool verbose = false, string? buildConfiguration 
     }
 
     // When a build fails its a good chance that by doing a clean build once it works.
-    private static void CleanBuild(string projectFilePath)
+    private static void CleanBuild(string projectFilePath, string buildConfiguration)
     {
-        var buildPath = Path.Combine(projectFilePath, "build");
+        var buildPath = Path.Combine(projectFilePath, GetBuildDirectoryPath(buildConfiguration));
         if (Directory.Exists(buildPath))
             Directory.Delete(buildPath, recursive: true);
     }
+
+    private static string GetBuildDirectoryPath(string buildConfiguration) =>
+        Path.Combine("build", buildConfiguration);
 
     private static bool IsConfigureUpToDate(string buildCachePath, string expectedBuildConfiguration)
     {
@@ -568,15 +576,16 @@ public sealed class AbelRunner(bool verbose = false, string? buildConfiguration 
     private string ResolveExecutablePath(string projectFilePath, string projectName, string buildConfiguration)
     {
         var executableName = projectName + (OperatingSystem.IsWindows() ? ".exe" : "");
-        var singleConfigPath = Path.Combine(projectFilePath, "build", executableName);
-        if (File.Exists(singleConfigPath))
-            return singleConfigPath;
+        var configScopedPath = Path.Combine(projectFilePath, GetBuildDirectoryPath(buildConfiguration), executableName);
+        if (File.Exists(configScopedPath))
+            return configScopedPath;
 
-        var multiConfigPath = Path.Combine(projectFilePath, "build", buildConfiguration, executableName);
-        if (File.Exists(multiConfigPath))
-            return multiConfigPath;
+        // Backward compatibility for projects built before config-specific folders.
+        var legacyPath = Path.Combine(projectFilePath, "build", executableName);
+        if (File.Exists(legacyPath))
+            return legacyPath;
 
-        return singleConfigPath;
+        return configScopedPath;
     }
 
     private static string? NormalizeBuildConfigurationOrNull(string? buildConfiguration)
