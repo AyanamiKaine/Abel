@@ -11,7 +11,7 @@
     <PackAsTool>true</PackAsTool>
     <ToolCommandName>abel</ToolCommandName>
     <PackageId>Abel.Tool</PackageId>
-    <Version>0.2.0</Version>
+    <Version>0.2.1</Version>
     <Authors>Abel</Authors>
     <Description>Opinionated C++ build and run tool using CMake + Ninja.</Description>
     <PackageTags>cpp;cmake;ninja;build;cli</PackageTags>
