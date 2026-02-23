@@ -339,6 +339,7 @@ public class CmakeBuilder
         WriteTarget(w);
         WriteSources(w);
         WriteCompileFeatures(w);
+        WriteDefaultCompilerFlags(w);
         WriteLinkLibraries(w);
 
         if (_outputType == OutputType.library && _enableInstall)
@@ -856,6 +857,17 @@ public class CmakeBuilder
         {
             w.Line($"target_compile_features({_projectName} PUBLIC cxx_std_{_cxxStandard})");
         }
+    }
+
+    private void WriteDefaultCompilerFlags(CmakeWriter w)
+    {
+        w.Blank();
+        w.Line("# Sane warning defaults for project sources.");
+        w.Line("if(MSVC)");
+        w.Line($"    target_compile_options({_projectName} PRIVATE /W4 /permissive-)");
+        w.Line("else()");
+        w.Line($"    target_compile_options({_projectName} PRIVATE -Wall -Wextra -Wpedantic)");
+        w.Line("endif()");
     }
 
     /// <summary>

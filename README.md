@@ -65,8 +65,8 @@ abel build
 
 ## Commands
 
-- `abel build [paths...] [--verbose]`
-- `abel run [paths...] [--verbose]`
+- `abel build [paths...] [--release|--debug|--configuration <name>] [--verbose]`
+- `abel run [paths...] [--release|--debug|--configuration <name>] [--verbose]`
 - `abel check [--verbose]`
 - `abel list [--verbose]`
 - `abel search <query> [--verbose]`

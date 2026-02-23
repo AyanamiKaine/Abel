@@ -75,7 +75,7 @@ internal static class Program
     private static void PrintUsageSection()
     {
         Console.WriteLine("Usage:");
-        Console.WriteLine("  abel <command> [args...] [--verbose]");
+        Console.WriteLine("  abel <command> [args...] [options]");
         Console.WriteLine();
         Console.WriteLine("Commands:");
         Console.WriteLine("  build      Build one or more project directories");
@@ -91,6 +91,9 @@ internal static class Program
         Console.WriteLine();
         Console.WriteLine("Options:");
         Console.WriteLine("  -v, --verbose   Enable verbose output");
+        Console.WriteLine("  --release       Use Release configuration (default for build/run)");
+        Console.WriteLine("  --debug         Use Debug configuration");
+        Console.WriteLine("  -c, --configuration <name>   Build config: Debug|Release|RelWithDebInfo|MinSizeRel");
         Console.WriteLine();
     }
 
@@ -149,7 +152,7 @@ internal static class Program
         if (projectDirectories.Count == 0)
             throw new InvalidOperationException("No project directories found.");
 
-        using var runner = new AbelRunner(command.Verbose);
+        using var runner = new AbelRunner(command.Verbose, command.BuildConfiguration);
         EventHandler onProcessExit = (_, _) => runner.Dispose();
         ConsoleCancelEventHandler onCancelKeyPress = (_, _) => runner.Dispose();
         AppDomain.CurrentDomain.ProcessExit += onProcessExit;
@@ -231,21 +234,19 @@ internal static class Program
         var kind = ParseCommandKind(first);
 
         var verbose = false;
+        var buildConfiguration = "Release";
         var paths = new List<string>();
 
         for (var i = 1; i < args.Length; i++)
         {
             var token = args[i];
-            if (token is "-v" or "--verbose")
+            if (TryHandleCommonOption(kind, args, ref i, ref verbose, ref buildConfiguration, out var earlyExit))
             {
-                verbose = true;
+                if (earlyExit is not null)
+                    return earlyExit;
+
                 continue;
             }
-
-            if (IsHelpToken(token))
-                return ParsedCommand.Help();
-            if (IsVersionToken(token))
-                return ParsedCommand.Version();
 
             if (token.StartsWith('-') && kind != CommandKind.Init && kind != CommandKind.Add)
                 throw new InvalidOperationException($"Unknown option '{token}'.");
@@ -253,7 +254,87 @@ internal static class Program
             paths.Add(token);
         }
 
-        return new ParsedCommand(kind, verbose, paths);
+        return new ParsedCommand(kind, verbose, paths, buildConfiguration);
+    }
+
+    private static bool TryHandleCommonOption(
+        CommandKind kind,
+        string[] args,
+        ref int index,
+        ref bool verbose,
+        ref string buildConfiguration,
+        out ParsedCommand? earlyExit)
+    {
+        earlyExit = null;
+        var token = args[index];
+
+        if (token is "-v" or "--verbose")
+        {
+            verbose = true;
+            return true;
+        }
+
+        if (token.Equals("--release", StringComparison.OrdinalIgnoreCase))
+        {
+            EnsureBuildOrRunConfigurationOption(kind, token);
+            buildConfiguration = "Release";
+            return true;
+        }
+
+        if (token.Equals("--debug", StringComparison.OrdinalIgnoreCase))
+        {
+            EnsureBuildOrRunConfigurationOption(kind, token);
+            buildConfiguration = "Debug";
+            return true;
+        }
+
+        if (token is "-c" or "--configuration")
+        {
+            EnsureBuildOrRunConfigurationOption(kind, token);
+            index++;
+            if (index >= args.Length)
+                throw new InvalidOperationException($"Option '{token}' requires a value.");
+
+            buildConfiguration = ParseBuildConfiguration(args[index]);
+            return true;
+        }
+
+        if (IsHelpToken(token))
+        {
+            earlyExit = ParsedCommand.Help();
+            return true;
+        }
+
+        if (IsVersionToken(token))
+        {
+            earlyExit = ParsedCommand.Version();
+            return true;
+        }
+
+        return false;
+    }
+
+    private static void EnsureBuildOrRunConfigurationOption(CommandKind kind, string option)
+    {
+        if (kind is CommandKind.Build or CommandKind.Run)
+            return;
+
+        throw new InvalidOperationException($"Option '{option}' is only valid for 'build' and 'run'.");
+    }
+
+    private static string ParseBuildConfiguration(string value)
+    {
+        if (value.Equals("debug", StringComparison.OrdinalIgnoreCase))
+            return "Debug";
+        if (value.Equals("release", StringComparison.OrdinalIgnoreCase))
+            return "Release";
+        if (value.Equals("relwithdebinfo", StringComparison.OrdinalIgnoreCase))
+            return "RelWithDebInfo";
+        if (value.Equals("minsizerel", StringComparison.OrdinalIgnoreCase))
+            return "MinSizeRel";
+
+        throw new InvalidOperationException(
+            $"Unknown configuration '{value}'. Use Debug, Release, RelWithDebInfo, or MinSizeRel.");
     }
 
     private static bool IsHelpToken(string token) =>
@@ -408,9 +489,10 @@ internal static class Program
     private sealed record ParsedCommand(
         CommandKind Kind,
         bool Verbose,
-        IReadOnlyList<string> Arguments)
+        IReadOnlyList<string> Arguments,
+        string BuildConfiguration)
     {
-        public static ParsedCommand Help() => new(CommandKind.Help, false, Array.Empty<string>());
-        public static ParsedCommand Version() => new(CommandKind.Version, false, Array.Empty<string>());
+        public static ParsedCommand Help() => new(CommandKind.Help, false, Array.Empty<string>(), "Release");
+        public static ParsedCommand Version() => new(CommandKind.Version, false, Array.Empty<string>(), "Release");
     }
 }

@@ -37,7 +37,7 @@ And possible warn the user of possible incompabilities.
 
 */
 
-public sealed class AbelRunner(bool verbose = false) : IDisposable
+public sealed class AbelRunner(bool verbose = false, string buildConfiguration = "Release") : IDisposable
 {
     private static readonly StringComparer NameComparer =
         OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
@@ -47,6 +47,7 @@ public sealed class AbelRunner(bool verbose = false) : IDisposable
     private readonly Dictionary<string, ProjectConfig> Projects = new(PathComparer);
     private readonly PackageRegistry _registry = new();
     private readonly ChildProcessScope _childProcessScope = new();
+    private readonly string _buildConfiguration = NormalizeBuildConfiguration(buildConfiguration);
     private bool _disposed;
 
     private sealed record LocalProjectReference(string DirectoryPath, ProjectConfig Config);
@@ -85,18 +86,16 @@ public sealed class AbelRunner(bool verbose = false) : IDisposable
 
             if (projectConfig.ProjectOutputType == OutputType.exe)
             {
-                var exePath = Path.Combine(
-                    projectFilePath,
-                    "build",
-                    projectConfig.Name + (OperatingSystem.IsWindows() ? ".exe" : ""));
+                var exePath = ResolveExecutablePath(projectFilePath, projectConfig.Name);
+                var exeDirectory = Path.GetDirectoryName(exePath) ?? Path.Combine(projectFilePath, "build");
 
-                Console.WriteLine($"  run {projectConfig.Name}");
+                Console.WriteLine($"  run {projectConfig.Name} ({_buildConfiguration})");
 
                 var runSw = Stopwatch.StartNew();
 
                 var runCommand = Cli.Wrap(exePath)
                     .WithArguments(Array.Empty<string>())
-                    .WithWorkingDirectory(Path.Combine(projectFilePath, "build"))
+                    .WithWorkingDirectory(exeDirectory)
                     .WithStandardOutputPipe(PipeTarget.ToDelegate(Console.WriteLine))
                     .WithStandardErrorPipe(PipeTarget.ToDelegate(Console.Error.WriteLine))
                     .WithValidation(CommandResultValidation.None);
@@ -358,11 +357,13 @@ public sealed class AbelRunner(bool verbose = false) : IDisposable
             "-S", ".",
             "-B", "build",
             "-G", "Ninja",
+            $"-DCMAKE_BUILD_TYPE={_buildConfiguration}",
+            "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
             $"-DCMAKE_PREFIX_PATH={localInstallPrefix}"
         };
 
         var buildCachePath = Path.Combine(projectFilePath, "build", "CMakeCache.txt");
-        var needsConfigure = cmakeListsChanged || !File.Exists(buildCachePath);
+        var needsConfigure = cmakeListsChanged || !IsConfigureUpToDate(buildCachePath, _buildConfiguration);
 
         if (needsConfigure)
         {
@@ -380,7 +381,7 @@ public sealed class AbelRunner(bool verbose = false) : IDisposable
 
         await ExecuteCommandAsync(
             "cmake",
-            ["--build", "build"],
+            ["--build", "build", "--config", _buildConfiguration],
             projectFilePath,
             $"build {projectConfig.Name}",
             ParseBuildProgress).ConfigureAwait(false);
@@ -390,7 +391,7 @@ public sealed class AbelRunner(bool verbose = false) : IDisposable
     {
         await ExecuteCommandAsync(
             "cmake",
-            ["--install", "build", "--prefix", localInstallPrefix],
+            ["--install", "build", "--config", _buildConfiguration, "--prefix", localInstallPrefix],
             projectFilePath,
             $"install {projectName}",
             ParseInstallProgress).ConfigureAwait(false);
@@ -501,6 +502,53 @@ public sealed class AbelRunner(bool verbose = false) : IDisposable
         var buildPath = Path.Combine(projectFilePath, "build");
         if (Directory.Exists(buildPath))
             Directory.Delete(buildPath, recursive: true);
+    }
+
+    private static bool IsConfigureUpToDate(string buildCachePath, string expectedBuildConfiguration)
+    {
+        if (!File.Exists(buildCachePath))
+            return false;
+
+        const string buildTypePrefix = "CMAKE_BUILD_TYPE:STRING=";
+        foreach (var line in File.ReadLines(buildCachePath))
+        {
+            if (!line.StartsWith(buildTypePrefix, StringComparison.Ordinal))
+                continue;
+
+            var actualBuildType = line[buildTypePrefix.Length..].Trim();
+            return string.Equals(actualBuildType, expectedBuildConfiguration, StringComparison.OrdinalIgnoreCase);
+        }
+
+        return false;
+    }
+
+    private string ResolveExecutablePath(string projectFilePath, string projectName)
+    {
+        var executableName = projectName + (OperatingSystem.IsWindows() ? ".exe" : "");
+        var singleConfigPath = Path.Combine(projectFilePath, "build", executableName);
+        if (File.Exists(singleConfigPath))
+            return singleConfigPath;
+
+        var multiConfigPath = Path.Combine(projectFilePath, "build", _buildConfiguration, executableName);
+        if (File.Exists(multiConfigPath))
+            return multiConfigPath;
+
+        return singleConfigPath;
+    }
+
+    private static string NormalizeBuildConfiguration(string buildConfiguration)
+    {
+        if (buildConfiguration.Equals("Debug", StringComparison.OrdinalIgnoreCase))
+            return "Debug";
+        if (buildConfiguration.Equals("Release", StringComparison.OrdinalIgnoreCase))
+            return "Release";
+        if (buildConfiguration.Equals("RelWithDebInfo", StringComparison.OrdinalIgnoreCase))
+            return "RelWithDebInfo";
+        if (buildConfiguration.Equals("MinSizeRel", StringComparison.OrdinalIgnoreCase))
+            return "MinSizeRel";
+
+        throw new InvalidOperationException(
+            $"Unsupported configuration '{buildConfiguration}'. Use Debug, Release, RelWithDebInfo, or MinSizeRel.");
     }
 
     private static async Task<bool> WriteTextIfChanged(string path, string content)
