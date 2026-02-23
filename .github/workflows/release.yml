@@ -55,38 +55,76 @@ jobs:
           echo "::error::If you added the secret recently, re-run the workflow."
           exit 1
 
-      - name: Require successful CI for this commit
+      - name: Wait for successful CI for this commit
         uses: actions/github-script@v7
         with:
           script: |
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const sha = context.sha;
+            const isTagRef = (context.ref ?? "").startsWith("refs/tags/");
+            const expectedBranch = context.payload.repository?.default_branch ?? "main";
+            const pollIntervalMs = 20 * 1000;
+            const timeoutMs = 60 * 60 * 1000;
+            const deadline = Date.now() + timeoutMs;
 
-            const response = await github.rest.actions.listWorkflowRuns({
-              owner,
-              repo,
-              workflow_id: "ci.yml",
-              head_sha: sha,
-              per_page: 50,
-            });
-
-            const successfulRun = response.data.workflow_runs.find(
-              run => run.status === "completed" && run.conclusion === "success"
-            );
-
-            if (!successfulRun) {
-              core.setFailed(
-                `No successful CI run from 'ci.yml' found for commit ${sha}. ` +
-                `Publish is blocked until CI passes.`
-              );
+            if (!isTagRef) {
+              core.setFailed("Release publish requires a tag ref (for example: refs/tags/v1.2.3).");
               return;
             }
 
-            core.notice(
-              `Using CI run #${successfulRun.run_number} (${successfulRun.html_url}) ` +
-              `for commit ${sha}.`
-            );
+            while (true) {
+              const response = await github.rest.actions.listWorkflowRuns({
+                owner,
+                repo,
+                workflow_id: "ci.yml",
+                head_sha: sha,
+                per_page: 50,
+              });
+
+              const matchingRuns = response.data.workflow_runs
+                .filter(run => run.event === "push" && run.head_branch === expectedBranch)
+                .sort((a, b) => {
+                  const aTime = new Date(a.created_at).getTime();
+                  const bTime = new Date(b.created_at).getTime();
+                  return bTime - aTime;
+                });
+
+              if (matchingRuns.length > 0) {
+                const run = matchingRuns[0];
+                core.notice(
+                  `CI run #${run.run_number} (${run.html_url}) status=${run.status}, conclusion=${run.conclusion ?? "n/a"}.`
+                );
+
+                if (run.status === "completed") {
+                  if (run.conclusion === "success") {
+                    core.notice(
+                      `Using successful CI run #${run.run_number} (${run.html_url}) for commit ${sha}.`
+                    );
+                    return;
+                  }
+
+                  core.setFailed(
+                    `CI run #${run.run_number} (${run.html_url}) finished with conclusion '${run.conclusion}'. ` +
+                    `Publish is blocked.`
+                  );
+                  return;
+                }
+              } else {
+                core.notice(
+                  `No CI run for commit ${sha} on '${expectedBranch}' yet. Waiting...`
+                );
+              }
+
+              if (Date.now() >= deadline) {
+                core.setFailed(
+                  `Timed out waiting for a successful 'ci.yml' run for commit ${sha} on branch '${expectedBranch}'.`
+                );
+                return;
+              }
+
+              await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+            }
 
       - name: Install Linux build tools
         run: |
