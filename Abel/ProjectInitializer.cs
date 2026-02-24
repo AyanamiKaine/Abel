@@ -175,10 +175,10 @@ internal static class ProjectInitializer
         }, JsonOptions);
 
         var mainCpp =
-            "#include <iostream>\n\n" +
-            "int main()\n" +
+            "#include <print>\n\n" +
+            "auto main() -> int\n" +
             "{\n" +
-            $"    std::cout << \"Hello from {context.ProjectName}\\n\";\n" +
+            $"    std::println(\"Hello from {context.ProjectName}\\n\");\n" +
             "    return 0;\n" +
             "}\n";
 
