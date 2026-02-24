@@ -201,3 +201,4 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+.claude/settings.local.json
