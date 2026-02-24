@@ -46,18 +46,20 @@ jobs:
           sudo apt-get install -y software-properties-common
           sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
           sudo apt-get update
-          sudo apt-get install -y cmake ninja-build gcc-15 g++-15
-          echo "CC=gcc-15" >> "$GITHUB_ENV"
-          echo "CXX=g++-15" >> "$GITHUB_ENV"
+          sudo apt-get install -y cmake ninja-build gcc-14 g++-14
+          echo "CC=gcc-14" >> "$GITHUB_ENV"
+          echo "CXX=g++-14" >> "$GITHUB_ENV"
 
       - name: Ensure Ninja on Windows
         if: runner.os == 'Windows'
         run: |
           choco install ninja -y --no-progress
-          # Remove MinGW from PATH so CMake uses MSVC instead of MinGW's
-          # incomplete C++23 libstdc++ (missing std::__open_terminal).
-          $newPath = ($env:PATH -split ';' | Where-Object { $_ -notmatch '[Mm]in[Gg][Ww]' }) -join ';'
-          "PATH=$newPath" | Out-File -Append -FilePath $env:GITHUB_ENV
+          # Point CMake at LLVM Clang (already on the runner) instead of whichever
+          # MinGW g++ appears first in PATH (mingw64, Strawberry, etc.).
+          # MinGW's C++23 libstdc++ is missing std::__open_terminal / std::__write_to_terminal.
+          $llvmBin = 'C:\Program Files\LLVM\bin'
+          Add-Content $env:GITHUB_ENV "CC=$llvmBin\clang.exe"
+          Add-Content $env:GITHUB_ENV "CXX=$llvmBin\clang++.exe"
 
       - name: Build Abel
         run: dotnet build Abel/Abel.csproj -c Release
