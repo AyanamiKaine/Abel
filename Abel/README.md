@@ -13,13 +13,13 @@ Abel is an opinionated C++ build runner built around CMake + Ninja.
 - `abel init <name> [--type exe|module]`
 - `abel init --list-templates`
 - `abel add <dep...> [--project <path>]`
-- `abel module <name> [--project <path>] [--dir <relative-path>]`
+- `abel module <name> [--project <path>] [--dir <relative-path>] [--partition <name> ...]`
 - `abel help`
 - `abel version`
 
 Configuration precedence for `build`/`run`: CLI (`--release/--debug/-c`) > `project.json` (`build.default_configuration`) > `Release`.
 Legacy header/src layout: set `build.legacy_header_src_layout` to `true` in `project.json`.
-For `abel module`, `--project` is optional. Abel searches upward for parent `project.json` when omitted.
+For `abel module`, `--project` is optional. Abel searches upward and uses the nearest parent `project.json` when omitted.
 
 ## Path Resolution
 

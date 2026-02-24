@@ -142,8 +142,9 @@ internal static class Program
     {
         Console.WriteLine("Module examples:");
         Console.WriteLine("  - abel module gameplay");
-        Console.WriteLine("  - abel module physics --project ./Game");
+        Console.WriteLine("  - abel module ai --project ./Game/gameplay");
         Console.WriteLine("  - abel module ui --dir modules/ui");
+        Console.WriteLine("  - abel module gameplay --partition ecs --partition systems.pathing");
     }
 
     private static int PrintVersionAndReturnSuccess()

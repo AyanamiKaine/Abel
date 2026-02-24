@@ -138,6 +138,94 @@ public sealed class AbelCliIntegrationTests
     }
 
     [Fact]
+    public async Task ModuleCanHostNestedModules_AndBuildResolvesDependencyChain()
+    {
+        using var workspace = new TemporaryWorkspace();
+
+        var initResult = await AbelCli.RunAsync(workspace.RootPath, "init", "rootapp");
+        Assert.Equal(0, initResult.ExitCode);
+
+        var rootProjectDirectory = Path.Combine(workspace.RootPath, "rootapp");
+        var gameplayResult = await AbelCli.RunAsync(workspace.RootPath, "module", "gameplay", "--project", rootProjectDirectory);
+        Assert.Equal(0, gameplayResult.ExitCode);
+
+        var gameplayProjectDirectory = Path.Combine(rootProjectDirectory, "gameplay");
+        var nestedResult = await AbelCli.RunAsync(workspace.RootPath, "module", "ai", "--project", gameplayProjectDirectory);
+        Assert.Equal(0, nestedResult.ExitCode);
+
+        Assert.Contains("gameplay", ReadDependencies(Path.Combine(rootProjectDirectory, "project.json")));
+        Assert.Contains("ai", ReadDependencies(Path.Combine(gameplayProjectDirectory, "project.json")));
+        Assert.True(File.Exists(Path.Combine(gameplayProjectDirectory, "ai", "project.json")));
+
+        var buildResult = await AbelCli.RunAsync(workspace.RootPath, "build", rootProjectDirectory);
+        Assert.Equal(0, buildResult.ExitCode);
+        Assert.Contains("build ai", buildResult.StandardOutput, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("build gameplay", buildResult.StandardOutput, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("build rootapp", buildResult.StandardOutput, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task ModuleWithoutProjectOption_UsesNearestParentProject()
+    {
+        using var workspace = new TemporaryWorkspace();
+
+        var initResult = await AbelCli.RunAsync(workspace.RootPath, "init", "nearesthost");
+        Assert.Equal(0, initResult.ExitCode);
+
+        var rootProjectDirectory = Path.Combine(workspace.RootPath, "nearesthost");
+        var gameplayResult = await AbelCli.RunAsync(workspace.RootPath, "module", "gameplay", "--project", rootProjectDirectory);
+        Assert.Equal(0, gameplayResult.ExitCode);
+
+        var gameplayProjectDirectory = Path.Combine(rootProjectDirectory, "gameplay");
+        var nestedResult = await AbelCli.RunAsync(gameplayProjectDirectory, "module", "ai");
+        Assert.Equal(0, nestedResult.ExitCode);
+
+        Assert.Contains("gameplay", ReadDependencies(Path.Combine(rootProjectDirectory, "project.json")));
+        Assert.DoesNotContain("ai", ReadDependencies(Path.Combine(rootProjectDirectory, "project.json")));
+        Assert.Contains("ai", ReadDependencies(Path.Combine(gameplayProjectDirectory, "project.json")));
+    }
+
+    [Fact]
+    public async Task ModuleWithPartitions_GeneratesPartitionScaffoldingAndBuilds()
+    {
+        using var workspace = new TemporaryWorkspace();
+
+        var initResult = await AbelCli.RunAsync(workspace.RootPath, "init", "partitionhost");
+        Assert.Equal(0, initResult.ExitCode);
+
+        var hostProjectDirectory = Path.Combine(workspace.RootPath, "partitionhost");
+        var moduleResult = await AbelCli.RunAsync(
+            workspace.RootPath,
+            "module",
+            "gameplay",
+            "--project",
+            hostProjectDirectory,
+            "--partition",
+            "ecs",
+            "--partition",
+            "systems.pathing");
+
+        Assert.Equal(0, moduleResult.ExitCode);
+
+        var moduleProjectDirectory = Path.Combine(hostProjectDirectory, "gameplay");
+        Assert.True(File.Exists(Path.Combine(moduleProjectDirectory, "src", "gameplay.cppm")));
+        Assert.True(File.Exists(Path.Combine(moduleProjectDirectory, "src", "gameplay.ecs.cppm")));
+        Assert.True(File.Exists(Path.Combine(moduleProjectDirectory, "src", "gameplay.systems_pathing.cppm")));
+
+        var primaryInterface = File.ReadAllText(Path.Combine(moduleProjectDirectory, "src", "gameplay.cppm"));
+        Assert.Contains("export import :ecs;", primaryInterface);
+        Assert.Contains("export import :systems.pathing;", primaryInterface);
+
+        var moduleSources = ReadSourcesBucket(Path.Combine(moduleProjectDirectory, "project.json"), "modules");
+        Assert.Contains("src/gameplay.cppm", moduleSources);
+        Assert.Contains("src/gameplay.ecs.cppm", moduleSources);
+        Assert.Contains("src/gameplay.systems_pathing.cppm", moduleSources);
+
+        var buildResult = await AbelCli.RunAsync(workspace.RootPath, "build", hostProjectDirectory);
+        Assert.Equal(0, buildResult.ExitCode);
+    }
+
+    [Fact]
     public async Task BuildWithoutPath_UsesCurrentProjectDirectory()
     {
         using var workspace = new TemporaryWorkspace();
@@ -208,6 +296,27 @@ public sealed class AbelCliIntegrationTests
         }
 
         return dependencies;
+    }
+
+    private static IReadOnlyList<string> ReadSourcesBucket(string projectJsonPath, string bucketName)
+    {
+        using var document = JsonDocument.Parse(File.ReadAllText(projectJsonPath));
+        if (!document.RootElement.TryGetProperty("sources", out var sourcesElement) ||
+            sourcesElement.ValueKind != JsonValueKind.Object ||
+            !sourcesElement.TryGetProperty(bucketName, out var bucketElement) ||
+            bucketElement.ValueKind != JsonValueKind.Array)
+        {
+            return [];
+        }
+
+        var values = new List<string>();
+        foreach (var value in bucketElement.EnumerateArray())
+        {
+            if (value.ValueKind == JsonValueKind.String && value.GetString() is { } item)
+                values.Add(item);
+        }
+
+        return values;
     }
 
     private static string ReadProjectName(string projectJsonPath)

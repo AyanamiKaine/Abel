@@ -1,4 +1,5 @@
 using Abel.Core;
+using System.Text;
 using System.Text.Json;
 
 namespace Abel;
@@ -51,6 +52,7 @@ internal static class ModuleScaffolder
         string? projectPath = null;
         var projectPathExplicitlySet = false;
         string? moduleDirectory = null;
+        var partitionNames = new List<string>();
 
         for (var i = 0; i < args.Count; i++)
         {
@@ -61,7 +63,8 @@ internal static class ModuleScaffolder
                     token,
                     ref projectPath,
                     ref projectPathExplicitlySet,
-                    ref moduleDirectory))
+                    ref moduleDirectory,
+                    partitionNames))
                 continue;
 
             positional.Add(token);
@@ -72,7 +75,12 @@ internal static class ModuleScaffolder
         if (positional.Count > 1)
             throw new InvalidOperationException($"Unexpected extra argument '{positional[1]}' for command 'module'.");
 
-        return new CreateModuleOptions(positional[0], projectPath, projectPathExplicitlySet, moduleDirectory);
+        return new CreateModuleOptions(
+            positional[0],
+            projectPath,
+            projectPathExplicitlySet,
+            moduleDirectory,
+            ParseAndValidatePartitionNames(partitionNames));
     }
 
     private static bool TryHandleOption(
@@ -81,7 +89,8 @@ internal static class ModuleScaffolder
         string token,
         ref string? projectPath,
         ref bool projectPathExplicitlySet,
-        ref string? moduleDirectory)
+        ref string? moduleDirectory,
+        List<string> partitionNames)
     {
         if (token.Equals("--project", StringComparison.OrdinalIgnoreCase) ||
             token.Equals("-p", StringComparison.OrdinalIgnoreCase))
@@ -95,6 +104,13 @@ internal static class ModuleScaffolder
             token.Equals("-d", StringComparison.OrdinalIgnoreCase))
         {
             moduleDirectory = ReadOptionValue(args, ref index, token);
+            return true;
+        }
+
+        if (token.Equals("--partition", StringComparison.OrdinalIgnoreCase) ||
+            token.Equals("--part", StringComparison.OrdinalIgnoreCase))
+        {
+            partitionNames.Add(ReadOptionValue(args, ref index, token));
             return true;
         }
 
@@ -150,36 +166,19 @@ internal static class ModuleScaffolder
     private static string DiscoverProjectFilePath(string startDirectory)
     {
         var current = new DirectoryInfo(Path.GetFullPath(startDirectory));
-        string? firstProjectFilePath = null;
 
         while (current is not null)
         {
             var candidate = Path.Combine(current.FullName, "project.json");
-            if (!File.Exists(candidate))
-            {
-                current = current.Parent;
-                continue;
-            }
-
-            firstProjectFilePath ??= candidate;
-            if (IsExecutableProject(candidate))
+            if (File.Exists(candidate))
                 return candidate;
 
             current = current.Parent;
         }
 
-        if (firstProjectFilePath is not null)
-            return firstProjectFilePath;
-
         throw new InvalidOperationException(
             "Could not find a project.json in the current directory or any parent directory. " +
             "Use '--project <path>' to specify one explicitly.");
-    }
-
-    private static bool IsExecutableProject(string projectFilePath)
-    {
-        var config = ReadProjectConfig(projectFilePath);
-        return config.ProjectOutputType == OutputType.exe;
     }
 
     private static ProjectConfig ReadProjectConfig(string projectFilePath)
@@ -191,11 +190,11 @@ internal static class ModuleScaffolder
 
     private static void ValidateHostProject(ProjectConfig hostConfig, string hostProjectFilePath)
     {
-        if (hostConfig.ProjectOutputType == OutputType.exe)
+        if (hostConfig.ProjectOutputType is OutputType.exe or OutputType.library)
             return;
 
         throw new InvalidOperationException(
-            $"Project '{hostConfig.Name}' in '{hostProjectFilePath}' is not an executable program.");
+            $"Project '{hostConfig.Name}' in '{hostProjectFilePath}' is not a supported host project type.");
     }
 
     private static ModuleContext BuildContext(
@@ -218,6 +217,7 @@ internal static class ModuleScaffolder
         EnsureModuleDirectoryCanBeCreated(moduleDirectoryPath);
 
         var moduleIdentifier = ToModuleIdentifier(moduleProjectName);
+        var partitions = BuildPartitionDefinitions(options.PartitionNames);
         var dependencyAdded = TryAddDependency(hostConfig, moduleProjectName);
 
         return new ModuleContext(
@@ -226,6 +226,7 @@ internal static class ModuleScaffolder
             moduleProjectName,
             moduleDirectoryPath,
             moduleIdentifier,
+            partitions,
             hostConfig.CXXStandard,
             dependencyAdded);
     }
@@ -302,14 +303,36 @@ internal static class ModuleScaffolder
         Directory.CreateDirectory(Path.Combine(context.ModuleDirectoryPath, "src"));
 
         var moduleFile = $"src/{context.ModuleIdentifier}.cppm";
-        var implFile = $"src/{context.ModuleIdentifier}_impl.cpp";
+        var moduleSources = new List<string> { moduleFile };
+        var privateSources = new List<string>();
+        var files = new List<(string RelativePath, string Content)>();
 
-        var files = new List<(string RelativePath, string Content)>
+        if (context.Partitions.Count == 0)
         {
-            ("project.json", BuildModuleProjectJson(context, moduleFile, implFile)),
-            (moduleFile, BuildModuleInterfaceSource(context.ModuleIdentifier)),
-            (implFile, BuildModuleImplementationSource(context.ModuleIdentifier)),
-        };
+            var implFile = $"src/{context.ModuleIdentifier}_impl.cpp";
+            privateSources.Add(implFile);
+
+            files.Add((moduleFile, BuildModuleInterfaceSource(context.ModuleIdentifier)));
+            files.Add((implFile, BuildModuleImplementationSource(context.ModuleIdentifier)));
+        }
+        else
+        {
+            files.Add((moduleFile, BuildModulePrimaryInterfaceSource(context.ModuleIdentifier, context.Partitions)));
+
+            foreach (var partition in context.Partitions)
+            {
+                var partitionInterfaceFile = $"src/{context.ModuleIdentifier}.{partition.FileNameToken}.cppm";
+
+                moduleSources.Add(partitionInterfaceFile);
+
+                files.Add((partitionInterfaceFile, BuildPartitionInterfaceSource(
+                    context.ModuleIdentifier,
+                    partition.PartitionName,
+                    partition.ExportedFunctionName)));
+            }
+        }
+
+        files.Insert(0, ("project.json", BuildModuleProjectJson(context, moduleSources, privateSources)));
 
         var created = new List<string>(files.Count);
         foreach (var file in files)
@@ -321,7 +344,10 @@ internal static class ModuleScaffolder
         return created;
     }
 
-    private static string BuildModuleProjectJson(ModuleContext context, string moduleFile, string implFile)
+    private static string BuildModuleProjectJson(
+        ModuleContext context,
+        IReadOnlyList<string> moduleSources,
+        IReadOnlyList<string> privateSources)
     {
         var json = JsonSerializer.Serialize(new
         {
@@ -330,8 +356,8 @@ internal static class ModuleScaffolder
             cxx_standard = context.CXXStandard,
             sources = new Dictionary<string, string[]>(StringComparer.Ordinal)
             {
-                ["modules"] = [moduleFile],
-                ["private"] = [implFile],
+                ["modules"] = moduleSources.ToArray(),
+                ["private"] = privateSources.ToArray(),
             },
             dependencies = Array.Empty<string>(),
             tests = new
@@ -347,11 +373,34 @@ internal static class ModuleScaffolder
         $"export module {moduleIdentifier};\n\n" +
         "export int add(int a, int b);\n";
 
+    private static string BuildModulePrimaryInterfaceSource(
+        string moduleIdentifier,
+        IReadOnlyList<ModulePartitionDefinition> partitions)
+    {
+        var builder = new StringBuilder();
+        builder.Append("export module ").Append(moduleIdentifier).Append(";\n\n");
+
+        foreach (var partition in partitions)
+            builder.Append("export import :").Append(partition.PartitionName).Append(";\n");
+
+        return builder.ToString();
+    }
+
     private static string BuildModuleImplementationSource(string moduleIdentifier) =>
         $"module {moduleIdentifier};\n\n" +
         "int add(int a, int b)\n" +
         "{\n" +
         "    return a + b;\n" +
+        "}\n";
+
+    private static string BuildPartitionInterfaceSource(
+        string moduleIdentifier,
+        string partitionName,
+        string exportedFunctionName) =>
+        $"export module {moduleIdentifier}:{partitionName};\n\n" +
+        $"export int {exportedFunctionName}()\n" +
+        "{\n" +
+        "    return 0;\n" +
         "}\n";
 
     private static void WriteProjectConfig(string projectFilePath, ProjectConfig config)
@@ -368,6 +417,9 @@ internal static class ModuleScaffolder
         else
             Console.WriteLine($"Dependency '{context.ModuleProjectName}' already exists in '{context.HostProjectName}'.");
 
+        if (context.Partitions.Count > 0)
+            Console.WriteLine($"Created partitions: {string.Join(", ", context.Partitions.Select(partition => partition.PartitionName))}");
+
         if (verbose)
         {
             foreach (var file in createdFiles)
@@ -376,6 +428,92 @@ internal static class ModuleScaffolder
 
         Console.WriteLine("Next step:");
         Console.WriteLine($"  abel build {context.HostProjectDirectory}");
+    }
+
+    private static List<string> ParseAndValidatePartitionNames(List<string> rawPartitionNames)
+    {
+        if (rawPartitionNames.Count == 0)
+            return [];
+
+        var partitions = new List<string>(rawPartitionNames.Count);
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var rawName in rawPartitionNames)
+        {
+            var partitionName = rawName.Trim();
+            ValidatePartitionName(partitionName);
+
+            if (!seen.Add(partitionName))
+                throw new InvalidOperationException($"Duplicate partition '{partitionName}' is not allowed.");
+
+            partitions.Add(partitionName);
+        }
+
+        return partitions;
+    }
+
+    private static void ValidatePartitionName(string partitionName)
+    {
+        if (string.IsNullOrWhiteSpace(partitionName))
+            throw new InvalidOperationException("Option '--partition' requires a non-empty value.");
+
+        var segments = partitionName.Split('.');
+        foreach (var segment in segments)
+        {
+            if (string.IsNullOrWhiteSpace(segment))
+                throw new InvalidOperationException(
+                    $"Partition '{partitionName}' is invalid. Dot-separated segments cannot be empty.");
+
+            if (!IsIdentifierStart(segment[0]))
+            {
+                throw new InvalidOperationException(
+                    $"Partition '{partitionName}' is invalid. Segment '{segment}' must start with a letter or '_'.");
+            }
+
+            foreach (var ch in segment)
+            {
+                if (char.IsLetterOrDigit(ch) || ch == '_')
+                    continue;
+
+                throw new InvalidOperationException(
+                    $"Partition '{partitionName}' contains unsupported character '{ch}'. Use letters, digits, '_' and optional dots.");
+            }
+        }
+    }
+
+    private static bool IsIdentifierStart(char ch) => char.IsLetter(ch) || ch == '_';
+
+    private static List<ModulePartitionDefinition> BuildPartitionDefinitions(List<string> partitionNames)
+    {
+        if (partitionNames.Count == 0)
+            return [];
+
+        var partitions = new List<ModulePartitionDefinition>(partitionNames.Count);
+        var fileNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var functionNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var partitionName in partitionNames)
+        {
+            var token = partitionName.Replace(".", "_", StringComparison.Ordinal);
+            var fileToken = ToModuleIdentifier(token);
+            var functionName = $"partition_{fileToken}_value";
+
+            if (!fileNames.Add(fileToken))
+            {
+                throw new InvalidOperationException(
+                    $"Partition '{partitionName}' collides with another partition when generating filenames.");
+            }
+
+            if (!functionNames.Add(functionName))
+            {
+                throw new InvalidOperationException(
+                    $"Partition '{partitionName}' collides with another partition when generating symbols.");
+            }
+
+            partitions.Add(new ModulePartitionDefinition(partitionName, fileToken, functionName));
+        }
+
+        return partitions;
     }
 
     private static string ToModuleIdentifier(string projectName)
@@ -408,13 +546,19 @@ internal static class ModuleScaffolder
         string ModuleName,
         string? ProjectPath,
         bool ProjectPathExplicitlySet,
-        string? ModuleDirectory);
+        string? ModuleDirectory,
+        List<string> PartitionNames);
     private sealed record ModuleContext(
         string HostProjectName,
         string HostProjectDirectory,
         string ModuleProjectName,
         string ModuleDirectoryPath,
         string ModuleIdentifier,
+        List<ModulePartitionDefinition> Partitions,
         int CXXStandard,
         bool DependencyAdded);
+    private sealed record ModulePartitionDefinition(
+        string PartitionName,
+        string FileNameToken,
+        string ExportedFunctionName);
 }

@@ -71,6 +71,21 @@ abel module gameplay
 abel build
 ```
 
+Create a nested module chain (`root -> gameplay -> ai`):
+
+```powershell
+cd my_app
+abel module gameplay
+abel module ai --project ./gameplay
+abel build
+```
+
+Create a module with partitions:
+
+```powershell
+abel module gameplay --partition ecs --partition systems.pathing
+```
+
 ## Commands
 
 - `abel build [paths...] [--release|--debug|--configuration <name>] [--verbose]`
@@ -82,9 +97,9 @@ abel build
 - `abel init <name> [--type exe|module]`
 - `abel init --list-templates`
 - `abel add <dep...> [--project <path>]`
-- `abel module <name> [--project <path>] [--dir <relative-path>]`
+- `abel module <name> [--project <path>] [--dir <relative-path>] [--partition <name> ...]`
 
-For `abel module`, `--project` is optional. When omitted, Abel searches upward from the current directory for a parent `project.json` (preferring an executable project).
+For `abel module`, `--project` is optional. When omitted, Abel searches upward from the current directory and uses the nearest parent `project.json`.
 
 ## project.json
 
