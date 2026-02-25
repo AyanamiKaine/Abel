@@ -24,6 +24,7 @@ internal static class Program
                 CommandKind.Check => await RunCheckAsync(command.Verbose).ConfigureAwait(false),
                 CommandKind.Build => await RunBuildOrRunAsync(command, run: false).ConfigureAwait(false),
                 CommandKind.Run => await RunBuildOrRunAsync(command, run: true).ConfigureAwait(false),
+                CommandKind.Test => await RunTestAsync(command).ConfigureAwait(false),
                 CommandKind.List => RunListCommand(command),
                 CommandKind.Search => RunSearchCommand(command),
                 CommandKind.Info => RunInfoCommand(command),
@@ -82,6 +83,7 @@ internal static class Program
         Console.WriteLine("Commands:");
         Console.WriteLine("  build      Build one or more project directories");
         Console.WriteLine("  run        Build then run executable projects");
+        Console.WriteLine("  test       Build then run tests with ctest");
         Console.WriteLine("  check      Check required tools on PATH");
         Console.WriteLine("  list       List known registry packages");
         Console.WriteLine("  search     Search registry packages");
@@ -181,6 +183,34 @@ internal static class Program
                 await runner.Run().ConfigureAwait(false);
             else
                 await runner.Build().ConfigureAwait(false);
+        }
+        finally
+        {
+            Console.CancelKeyPress -= onCancelKeyPress;
+            AppDomain.CurrentDomain.ProcessExit -= onProcessExit;
+        }
+
+        return ExitSuccess;
+    }
+
+    private static async Task<int> RunTestAsync(ParsedCommand command)
+    {
+        var projectDirectories = ResolveProjectDirectories(command.Arguments);
+        if (projectDirectories.Count == 0)
+            throw new InvalidOperationException("No project directories found.");
+
+        using var runner = new AbelRunner(command.Verbose, command.BuildConfiguration);
+        EventHandler onProcessExit = (_, _) => runner.Dispose();
+        ConsoleCancelEventHandler onCancelKeyPress = (_, _) => runner.Dispose();
+        AppDomain.CurrentDomain.ProcessExit += onProcessExit;
+        Console.CancelKeyPress += onCancelKeyPress;
+
+        foreach (var dir in projectDirectories)
+            runner.ParseFolder(dir);
+
+        try
+        {
+            await runner.Test().ConfigureAwait(false);
         }
         finally
         {
@@ -336,10 +366,10 @@ internal static class Program
 
     private static void EnsureBuildOrRunConfigurationOption(CommandKind kind, string option)
     {
-        if (kind is CommandKind.Build or CommandKind.Run)
+        if (kind is CommandKind.Build or CommandKind.Run or CommandKind.Test)
             return;
 
-        throw new InvalidOperationException($"Option '{option}' is only valid for 'build' and 'run'.");
+        throw new InvalidOperationException($"Option '{option}' is only valid for 'build', 'run', and 'test'.");
     }
 
     private static string ParseBuildConfiguration(string value)
@@ -371,6 +401,8 @@ internal static class Program
             return CommandKind.Build;
         if (commandText.Equals("run", StringComparison.OrdinalIgnoreCase))
             return CommandKind.Run;
+        if (commandText.Equals("test", StringComparison.OrdinalIgnoreCase))
+            return CommandKind.Test;
         if (commandText.Equals("check", StringComparison.OrdinalIgnoreCase))
             return CommandKind.Check;
         if (commandText.Equals("list", StringComparison.OrdinalIgnoreCase))
@@ -502,6 +534,7 @@ internal static class Program
         Check,
         Build,
         Run,
+        Test,
         List,
         Search,
         Info,

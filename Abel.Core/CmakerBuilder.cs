@@ -1205,8 +1205,10 @@ public class CmakeBuilder
             var sources = string.Join(" ", test.Sources);
             w.Line($"    add_executable({test.Name} {sources})");
 
-            // Link the main target + any test-specific libs (e.g. doctest)
-            var allLibs = new List<string> { _projectName };
+            // Link the main target (library only) + any test-specific libs (e.g. doctest)
+            var allLibs = new List<string>();
+            if (_outputType == OutputType.library)
+                allLibs.Add(_projectName);
             allLibs.AddRange(test.LinkLibraries);
 
             w.Line($"    target_link_libraries({test.Name} PRIVATE");

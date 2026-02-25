@@ -132,7 +132,8 @@ public sealed class AbelRunner(bool verbose = false, string? buildConfiguration 
             _gitDependencyCache.Clear();
 
             var projectFilePath = project.Key;
-            var projectConfig = project.Value;
+            var projectConfig = SyncTestFilesFromDisk(projectFilePath, project.Value);
+            Projects[projectFilePath] = projectConfig;
             var localProjectIndex = BuildLocalProjectIndex(projectFilePath);
             var localInstallPrefix = Path.Combine(projectFilePath, ".abel", "local_deps");
 
@@ -165,8 +166,25 @@ public sealed class AbelRunner(bool verbose = false, string? buildConfiguration 
     /// <summary>
     /// Running tests
     /// </summary>
-    public void Test()
+    public async Task Test()
     {
+        await Build().ConfigureAwait(false);
+
+        foreach (var (projectFilePath, projectConfig) in Projects)
+        {
+            if (projectConfig.Tests.Files.Count == 0) continue;
+
+            var buildConfiguration = ResolveBuildConfiguration(projectConfig);
+            var buildDirectory = GetBuildDirectoryPath(buildConfiguration);
+
+            await ExecuteCommandAsync(
+                "ctest",
+                ["--test-dir", buildDirectory, "--output-on-failure"],
+                projectFilePath,
+                $"test {projectConfig.Name}",
+                ParseTestProgress
+            ).ConfigureAwait(false);
+        }
     }
 
     /// <summary>
@@ -1134,6 +1152,72 @@ public sealed class AbelRunner(bool verbose = false, string? buildConfiguration 
             return "artifacts already installed";
 
         return null;
+    }
+
+    private static string? ParseTestProgress(string line)
+    {
+        var trimmed = line.Trim();
+
+        // "X% tests passed ..." → return as final status
+        if (trimmed.Contains("% tests passed", StringComparison.OrdinalIgnoreCase))
+            return trimmed;
+
+        // "X/Y Test #N: ..." → return "running test X/Y"
+        var spaceIdx = trimmed.IndexOf(' ', StringComparison.Ordinal);
+        if (spaceIdx > 0)
+        {
+            var first = trimmed[..spaceIdx];
+            var slashIdx = first.IndexOf('/', StringComparison.Ordinal);
+            if (slashIdx > 0)
+            {
+                var xPart = first[..slashIdx];
+                var yPart = first[(slashIdx + 1)..];
+                if (int.TryParse(xPart, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out _) &&
+                    int.TryParse(yPart, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out _))
+                    return $"running test {first}";
+            }
+        }
+
+        return null;
+    }
+
+    private static readonly JsonSerializerOptions ProjectJsonOptions = new() { WriteIndented = true };
+
+    private static void WriteProjectConfig(string path, ProjectConfig config)
+    {
+        var json = JsonSerializer.Serialize(config, ProjectJsonOptions);
+        File.WriteAllText(path, json + "\n");
+    }
+
+    private static ProjectConfig SyncTestFilesFromDisk(string projectDir, ProjectConfig config)
+    {
+        var testsDir = Path.Combine(projectDir, "tests");
+        if (!Directory.Exists(testsDir))
+            return config;
+
+        var existing = new HashSet<string>(config.Tests.Files, StringComparer.OrdinalIgnoreCase);
+        var newFiles = new List<string>();
+
+        foreach (var fullPath in Directory.EnumerateFiles(testsDir, "*.cpp"))
+        {
+            var relativePath = "tests/" + Path.GetFileName(fullPath);
+            if (!existing.Contains(relativePath))
+                newFiles.Add(relativePath);
+        }
+
+        if (newFiles.Count == 0)
+            return config;
+
+        foreach (var f in newFiles)
+            config.Tests.Files.Add(f);
+
+        WriteProjectConfig(Path.Combine(projectDir, "project.json"), config);
+
+        Console.ForegroundColor = ConsoleColor.Cyan;
+        Console.WriteLine($"  [sync] {config.Name}: added test file(s) {string.Join(", ", newFiles)}");
+        Console.ResetColor();
+
+        return config;
     }
 
     private static string? ExtractDependencyName(string line)

@@ -217,12 +217,15 @@ Thumbs.db
 
     private static IReadOnlyList<TemplateFile> BuildExecutableFiles(InitContext context)
     {
+        var testFile = $"tests/{context.ProjectName}_test.cpp";
+
         var projectJson = JsonSerializer.Serialize(new
         {
             name = context.ProjectName,
             output_type = "exe",
             cxx_standard = 23,
             dependencies = Array.Empty<string>(),
+            tests = new { files = new[] { testFile } },
         }, JsonOptions);
 
         var mainCpp =
@@ -233,10 +236,19 @@ Thumbs.db
             "    return 0;\n" +
             "}\n";
 
+        var testCpp =
+            "#define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN\n" +
+            "#include <doctest/doctest.h>\n\n" +
+            "TEST_CASE(\"hello world\")\n" +
+            "{\n" +
+            "    CHECK(1 + 1 == 2);\n" +
+            "}\n";
+
         return
         [
             new TemplateFile("project.json", projectJson + "\n"),
             new TemplateFile("main.cpp", mainCpp),
+            new TemplateFile(testFile, testCpp),
             new TemplateFile(".gitignore", DefaultGitIgnore),
         ];
     }
@@ -245,6 +257,7 @@ Thumbs.db
     {
         var moduleFile = $"src/{context.ModuleName}.cppm";
         var implFile = $"src/{context.ModuleName}_impl.cpp";
+        var testFile = $"tests/{context.ModuleName}_test.cpp";
 
         var projectJson = JsonSerializer.Serialize(new
         {
@@ -259,7 +272,7 @@ Thumbs.db
             dependencies = Array.Empty<string>(),
             tests = new
             {
-                files = Array.Empty<string>(),
+                files = new[] { testFile },
             },
         }, JsonOptions);
 
@@ -274,11 +287,21 @@ Thumbs.db
             "    return a + b;\n" +
             "}\n";
 
+        var testCpp =
+            "#define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN\n" +
+            "#include <doctest/doctest.h>\n\n" +
+            $"import {context.ModuleName};\n\n" +
+            $"TEST_CASE(\"{context.ModuleName}\")\n" +
+            "{\n" +
+            "    CHECK(add(1, 2) == 3);\n" +
+            "}\n";
+
         return
         [
             new TemplateFile("project.json", projectJson + "\n"),
             new TemplateFile(moduleFile, moduleSource),
             new TemplateFile(implFile, moduleImpl),
+            new TemplateFile(testFile, testCpp),
             new TemplateFile(".gitignore", DefaultGitIgnore),
         ];
     }
