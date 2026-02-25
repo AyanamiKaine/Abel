@@ -1,3 +1,5 @@
+using System.ComponentModel;
+using System.Diagnostics;
 using System.Text.Json;
 
 namespace Abel;
@@ -5,6 +7,48 @@ namespace Abel;
 internal static class ProjectInitializer
 {
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
+    private const int GitInitTimeoutMs = 5000;
+    private const string DefaultGitIgnore = """
+# Build outputs
+/build/
+/build-*/
+/out/
+/bin/
+/obj/
+
+# Abel
+/.abel/
+
+# CMake generated files
+/CMakeFiles/
+/CMakeCache.txt
+/cmake_install.cmake
+/compile_commands.json
+/CTestTestfile.cmake
+/Testing/
+/Makefile
+/install_manifest.txt
+
+# IDE files
+/.vs/
+/.vscode/
+/.idea/
+*.suo
+*.user
+*.sln.docstates
+
+# Compiler artifacts
+*.o
+*.obj
+*.pdb
+*.ilk
+*.d
+*.exe
+
+# OS files
+.DS_Store
+Thumbs.db
+""";
 
     private static readonly Dictionary<string, ProjectTemplate> Templates =
         new(StringComparer.OrdinalIgnoreCase)
@@ -44,13 +88,20 @@ internal static class ProjectInitializer
             var template = ResolveTemplate(options.TemplateName);
             var context = CreateContext(options.ProjectName);
             var createdFiles = CreateFromTemplate(template, context);
+            var gitInitWarning = TryInitializeGitRepository(context.ProjectDirectory);
 
             Console.WriteLine($"Initialized {template.Key} project '{context.ProjectName}' at '{context.ProjectDirectory}'.");
             if (verbose)
             {
                 foreach (var file in createdFiles)
                     Console.WriteLine($"  + {file}");
+
+                if (gitInitWarning is null)
+                    Console.WriteLine("  + git repository initialized");
             }
+
+            if (gitInitWarning is not null)
+                Console.Error.WriteLine($"warn: {gitInitWarning}");
 
             Console.WriteLine("Next steps:");
             Console.WriteLine($"  cd {context.ProjectName}");
@@ -186,6 +237,7 @@ internal static class ProjectInitializer
         [
             new TemplateFile("project.json", projectJson + "\n"),
             new TemplateFile("main.cpp", mainCpp),
+            new TemplateFile(".gitignore", DefaultGitIgnore),
         ];
     }
 
@@ -227,7 +279,69 @@ internal static class ProjectInitializer
             new TemplateFile("project.json", projectJson + "\n"),
             new TemplateFile(moduleFile, moduleSource),
             new TemplateFile(implFile, moduleImpl),
+            new TemplateFile(".gitignore", DefaultGitIgnore),
         ];
+    }
+
+    private static string? TryInitializeGitRepository(string projectDirectory)
+    {
+        try
+        {
+            using var process = new Process
+            {
+                StartInfo = new ProcessStartInfo
+                {
+                    FileName = "git",
+                    Arguments = "init",
+                    WorkingDirectory = projectDirectory,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                },
+            };
+
+            if (!process.Start())
+                return $"Could not start 'git init' in '{projectDirectory}'.";
+
+            if (!process.WaitForExit(GitInitTimeoutMs))
+            {
+                TryKillProcess(process);
+                return $"Timed out while running 'git init' in '{projectDirectory}'.";
+            }
+
+            var stderr = process.StandardError.ReadToEnd().Trim();
+            var stdout = process.StandardOutput.ReadToEnd().Trim();
+
+            if (process.ExitCode == 0)
+                return null;
+
+            var details = string.IsNullOrWhiteSpace(stderr) ? stdout : stderr;
+            if (string.IsNullOrWhiteSpace(details))
+                return $"Failed to run 'git init' in '{projectDirectory}' (exit code {process.ExitCode}).";
+
+            return $"Failed to run 'git init' in '{projectDirectory}' (exit code {process.ExitCode}): {details}";
+        }
+        catch (Win32Exception ex)
+        {
+            return $"Could not run 'git init' in '{projectDirectory}': {ex.Message}";
+        }
+        catch (InvalidOperationException ex)
+        {
+            return $"Could not run 'git init' in '{projectDirectory}': {ex.Message}";
+        }
+    }
+
+    private static void TryKillProcess(Process process)
+    {
+        try
+        {
+            process.Kill(entireProcessTree: true);
+        }
+        catch (InvalidOperationException)
+        {
+            // Process has already exited.
+        }
     }
 
     private static void PrintTemplates()

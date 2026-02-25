@@ -84,12 +84,32 @@ public sealed class AbelCliIntegrationTests
         var projectDirectory = Path.Combine(workspace.RootPath, "demoapp");
         Assert.True(File.Exists(Path.Combine(projectDirectory, "project.json")));
         Assert.True(File.Exists(Path.Combine(projectDirectory, "main.cpp")));
+        Assert.True(File.Exists(Path.Combine(projectDirectory, ".gitignore")));
+
+        AssertGitInitializationResult(projectDirectory, initResult.StandardError);
 
         var runResult = await AbelCli.RunAsync(workspace.RootPath, "run", "demoapp");
 
         Assert.Equal(0, runResult.ExitCode);
         Assert.Contains("build demoapp", runResult.StandardOutput, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("Hello from demoapp", runResult.StandardOutput);
+    }
+
+    [Fact]
+    public async Task InitModule_CreatesGitIgnore_AndInitializesGitWhenAvailable()
+    {
+        using var workspace = new TemporaryWorkspace();
+
+        var initResult = await AbelCli.RunAsync(workspace.RootPath, "init", "demomodule", "--type", "module");
+        Assert.Equal(0, initResult.ExitCode);
+
+        var projectDirectory = Path.Combine(workspace.RootPath, "demomodule");
+        Assert.True(File.Exists(Path.Combine(projectDirectory, "project.json")));
+        Assert.True(File.Exists(Path.Combine(projectDirectory, "src", "demomodule.cppm")));
+        Assert.True(File.Exists(Path.Combine(projectDirectory, "src", "demomodule_impl.cpp")));
+        Assert.True(File.Exists(Path.Combine(projectDirectory, ".gitignore")));
+
+        AssertGitInitializationResult(projectDirectory, initResult.StandardError);
     }
 
     [Fact]
@@ -330,6 +350,47 @@ public sealed class AbelCliIntegrationTests
         }
 
         return nameElement.GetString()!;
+    }
+
+    private static void AssertGitInitializationResult(string projectDirectory, string standardError)
+    {
+        if (IsGitAvailable(projectDirectory))
+        {
+            Assert.True(
+                Directory.Exists(Path.Combine(projectDirectory, ".git")),
+                "Expected git repository initialization to create a .git directory.");
+            return;
+        }
+
+        Assert.Contains("warn:", standardError, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("git init", standardError, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsGitAvailable(string workingDirectory)
+    {
+        try
+        {
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = "git",
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                WorkingDirectory = workingDirectory,
+            };
+
+            startInfo.ArgumentList.Add("--version");
+
+            using var process = new Process { StartInfo = startInfo };
+            process.Start();
+            process.WaitForExit();
+            return process.ExitCode == 0;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private static void CopyDirectoryRecursive(string sourceDirectory, string destinationDirectory)

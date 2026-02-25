@@ -63,6 +63,8 @@ cd my_module
 abel build
 ```
 
+`abel init` creates a default C++ `.gitignore` and runs `git init` automatically. If git is unavailable, initialization still succeeds and prints a warning.
+
 Create a local module inside an existing app and wire it as dependency:
 
 ```powershell
@@ -94,7 +96,7 @@ abel module gameplay --partition ecs --partition systems.pathing
 - `abel list [--verbose]`
 - `abel search <query> [--verbose]`
 - `abel info <package[/variant]> [--verbose]`
-- `abel init <name> [--type exe|module]`
+- `abel init <name> [--type exe|module]` (also bootstraps git + `.gitignore`)
 - `abel init --list-templates`
 - `abel add <dep...> [--project <path>]`
 - `abel module <name> [--project <path>] [--dir <relative-path>] [--partition <name> ...]`
