@@ -538,7 +538,8 @@ public class CmakeBuilder
         var variant = GetVariant(package, variantName);
         resolvedPackageVariants[package.Name] = variantName;
 
-        var transitiveDependencyNames = MergeDistinctStrings(
+        var transitiveDependencyNames = ResolveLayer(
+            package.CoreDependencies,
             package.Dependencies,
             variant?.Dependencies);
 
@@ -571,8 +572,8 @@ public class CmakeBuilder
         }
         else if (strategy.Equals("wrapper", StringComparison.OrdinalIgnoreCase))
         {
-            var sources = MergeDistinctStrings(package.Sources, variant?.Sources);
-            var includeDirs = MergeDistinctStrings(package.IncludeDirs, variant?.IncludeDirs);
+            var sources = ResolveLayer(package.CoreSources, package.Sources, variant?.Sources);
+            var includeDirs = ResolveLayer(package.CoreIncludeDirs, package.IncludeDirs, variant?.IncludeDirs);
             var compileDefinitions = MergeDistinctStrings(package.CompileDefinitions, variant?.CompileDefinitions);
             var linkLibraries = CollectTransitiveLinkTargets(transitiveDependencyNames, registry);
 
@@ -595,7 +596,7 @@ public class CmakeBuilder
         }
         else if (strategy.Equals("header_inject", StringComparison.OrdinalIgnoreCase))
         {
-            var includeDirs = MergeDistinctStrings(package.IncludeDirs, variant?.IncludeDirs);
+            var includeDirs = ResolveLayer(package.CoreIncludeDirs, package.IncludeDirs, variant?.IncludeDirs);
             var compileDefinitions = MergeDistinctStrings(package.CompileDefinitions, variant?.CompileDefinitions);
             var linkLibraries = CollectTransitiveLinkTargets(transitiveDependencyNames, registry);
 
@@ -654,6 +655,27 @@ public class CmakeBuilder
         }
 
         return output;
+    }
+
+    /// <summary>
+    /// Resolves the effective list for a field supporting the "core + replace" model.
+    ///
+    /// When corePins is non-empty:
+    ///   result = corePins + (variantLayer ?? baseLayer)   — variant REPLACES base
+    ///
+    /// When corePins is empty (all legacy packages):
+    ///   result = MergeDistinctStrings(baseLayer, variantLayer)  — unchanged behavior
+    /// </summary>
+    private static List<string> ResolveLayer(
+        IList<string> corePins,
+        IList<string> baseLayer,
+        IList<string>? variantLayer)
+    {
+        if (corePins.Count == 0)
+            return MergeDistinctStrings(baseLayer, variantLayer);
+
+        var selected = variantLayer ?? baseLayer;
+        return MergeDistinctStrings(corePins, selected);
     }
 
     private static void AddDistinctOptions(List<string> destination, IEnumerable<string> source)

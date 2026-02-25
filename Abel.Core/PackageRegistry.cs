@@ -184,7 +184,9 @@ public class PackageRegistry
             GitTag = "docking",
             Strategy = "wrapper",
             CmakeTargets = ["imgui::imgui"],
-            Sources =
+
+            // Always compiled — the five core imgui translation units.
+            CoreSources =
             [
                 "imgui.cpp",
                 "imgui_draw.cpp",
@@ -192,9 +194,24 @@ public class PackageRegistry
                 "imgui_widgets.cpp",
                 "imgui_demo.cpp",
             ],
-            IncludeDirs = ["."],
+            CoreIncludeDirs = ["."],
+            CoreDependencies = [],
+
+            // Default (no variant): all common SDL3-compatible backends.
+            // Users can #include any of: imgui_impl_sdl3.h, imgui_impl_sdlrenderer3.h,
+            // imgui_impl_opengl3.h without specifying a variant.
+            Sources =
+            [
+                "backends/imgui_impl_sdl3.cpp",
+                "backends/imgui_impl_sdlrenderer3.cpp",
+                "backends/imgui_impl_opengl3.cpp",
+            ],
+            IncludeDirs = ["backends"],
+            Dependencies = ["sdl3"],
+
             Variants = new Dictionary<string, PackageVariant>(KeyComparer)
             {
+                // Minimal: SDL3 platform + SDL Renderer backend only.
                 ["sdl3_renderer"] = new PackageVariant
                 {
                     Sources =
@@ -205,6 +222,7 @@ public class PackageRegistry
                     IncludeDirs = ["backends"],
                     Dependencies = ["sdl3"],
                 },
+                // Minimal: SDL3 platform + OpenGL 3 backend only.
                 ["sdl3_opengl3"] = new PackageVariant
                 {
                     Sources =
@@ -215,6 +233,7 @@ public class PackageRegistry
                     IncludeDirs = ["backends"],
                     Dependencies = ["sdl3"],
                 },
+                // Minimal: SDL3 platform + Vulkan backend only.
                 ["sdl3_vulkan"] = new PackageVariant
                 {
                     Sources =
@@ -224,6 +243,15 @@ public class PackageRegistry
                     ],
                     IncludeDirs = ["backends"],
                     Dependencies = ["sdl3"],
+                },
+                // Core imgui only — no backend .cpp files compiled, no SDL3 dep.
+                // backends/ is still on the include path so backend headers are accessible
+                // for users who compile their own backend files via project sources.
+                ["core"] = new PackageVariant
+                {
+                    Sources = [],
+                    IncludeDirs = ["backends"],
+                    Dependencies = [],
                 },
             },
             Description = "Immediate-mode GUI library",

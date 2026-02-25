@@ -44,6 +44,14 @@ public class PackageEntry
     public IList<string> Dependencies { get; set; } = new List<string>();
 
     /// <summary>
+    /// Always-required registry dependencies, regardless of variant.
+    /// When non-empty, variants replace the base Dependencies layer.
+    /// Leave empty to preserve augmenting-merge behavior.
+    /// </summary>
+    [JsonPropertyName("core_dependencies")]
+    public IList<string> CoreDependencies { get; set; } = new List<string>();
+
+    /// <summary>
     /// Strategy Abel uses to consume this dependency.
     ///   fetchcontent  normal FetchContent_MakeAvailable
     ///   wrapper       FetchContent_Populate + Abel-generated CMake target
@@ -59,10 +67,26 @@ public class PackageEntry
     public IList<string> Sources { get; set; } = new List<string>();
 
     /// <summary>
+    /// Always-compiled source files, regardless of which variant is selected.
+    /// When non-empty, variants REPLACE (not augment) the base Sources layer.
+    /// Leave empty to preserve the classic augmenting-merge behavior.
+    /// </summary>
+    [JsonPropertyName("core_sources")]
+    public IList<string> CoreSources { get; set; } = new List<string>();
+
+    /// <summary>
     /// Include directories relative to fetched source root.
     /// </summary>
     [JsonPropertyName("include_dirs")]
     public IList<string> IncludeDirs { get; set; } = new List<string>();
+
+    /// <summary>
+    /// Always-exposed include directories, regardless of variant.
+    /// When non-empty, variants replace the base IncludeDirs layer.
+    /// Leave empty to preserve augmenting-merge behavior.
+    /// </summary>
+    [JsonPropertyName("core_include_dirs")]
+    public IList<string> CoreIncludeDirs { get; set; } = new List<string>();
 
     /// <summary>
     /// Compile definitions applied to generated wrapper targets.
