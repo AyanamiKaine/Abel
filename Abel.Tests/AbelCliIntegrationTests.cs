@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace Abel.Tests;
 
@@ -110,6 +111,39 @@ public sealed class AbelCliIntegrationTests
         Assert.True(File.Exists(Path.Combine(projectDirectory, ".gitignore")));
 
         AssertGitInitializationResult(projectDirectory, initResult.StandardError);
+    }
+
+    [Fact]
+    public async Task Build_WithGitDependencyInProjectJson_FetchesAndIntegratesModule()
+    {
+        using var workspace = new TemporaryWorkspace();
+
+        var moduleInitResult = await AbelCli.RunAsync(workspace.RootPath, "init", "gitmath", "--type", "module");
+        Assert.Equal(0, moduleInitResult.ExitCode);
+
+        var moduleDirectory = Path.Combine(workspace.RootPath, "gitmath");
+        if (!IsGitAvailable(moduleDirectory))
+        {
+            Assert.Contains("warn:", moduleInitResult.StandardError, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("git init", moduleInitResult.StandardError, StringComparison.OrdinalIgnoreCase);
+            return;
+        }
+
+        EnsureRepositoryHasCommit(moduleDirectory);
+
+        var appInitResult = await AbelCli.RunAsync(workspace.RootPath, "init", "gitconsumer");
+        Assert.Equal(0, appInitResult.ExitCode);
+
+        var appDirectory = Path.Combine(workspace.RootPath, "gitconsumer");
+        var appProjectJson = Path.Combine(appDirectory, "project.json");
+        var appMainCpp = Path.Combine(appDirectory, "main.cpp");
+
+        AddGitDependencyToProject(appProjectJson, "gitmath", moduleDirectory);
+        WriteConsumerMainUsingModule(appMainCpp);
+
+        var buildResult = await AbelCli.RunAsync(workspace.RootPath, "build", appDirectory);
+        Assert.Equal(0, buildResult.ExitCode);
+        Assert.Contains("build gitconsumer", buildResult.StandardOutput, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -393,6 +427,109 @@ public sealed class AbelCliIntegrationTests
         }
     }
 
+    private static void EnsureRepositoryHasCommit(string repositoryPath)
+    {
+        ConfigureGitIdentity(repositoryPath);
+        RunGitCommand(repositoryPath, "add", ".");
+
+        var commitResult = RunProcess(
+            repositoryPath,
+            "git",
+            ["commit", "-m", "Initial commit"],
+            throwOnFailure: false);
+
+        if (commitResult.ExitCode == 0)
+            return;
+
+        // Re-running the test against an already-committed workspace is still valid.
+        var statusResult = RunProcess(repositoryPath, "git", ["status", "--porcelain"], throwOnFailure: false);
+        if (!string.IsNullOrWhiteSpace(statusResult.StandardOutput))
+        {
+            throw new InvalidOperationException(
+                $"Failed to commit git dependency test repository at '{repositoryPath}'. stderr: {commitResult.StandardError}");
+        }
+    }
+
+    private static void ConfigureGitIdentity(string repositoryPath)
+    {
+        RunProcess(repositoryPath, "git", ["config", "user.email", "abel-tests@example.com"], throwOnFailure: false);
+        RunProcess(repositoryPath, "git", ["config", "user.name", "Abel Tests"], throwOnFailure: false);
+    }
+
+    private static void AddGitDependencyToProject(string projectJsonPath, string dependencyName, string repositoryPath)
+    {
+        var root = JsonNode.Parse(File.ReadAllText(projectJsonPath))
+                   ?? throw new InvalidOperationException($"Could not parse '{projectJsonPath}'.");
+
+        if (root is not JsonObject rootObject)
+            throw new InvalidOperationException($"Expected JSON object in '{projectJsonPath}'.");
+
+        var dependencyArray = rootObject["dependencies"] as JsonArray ?? new JsonArray();
+        if (rootObject["dependencies"] is null)
+            rootObject["dependencies"] = dependencyArray;
+
+        dependencyArray.Add($"{dependencyName}@{new Uri(repositoryPath).AbsoluteUri}");
+        var json = rootObject.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
+        File.WriteAllText(projectJsonPath, json + "\n");
+    }
+
+    private static void WriteConsumerMainUsingModule(string mainCppPath)
+    {
+        var source =
+            "import gitmath;\n" +
+            "#include <print>\n\n" +
+            "auto main() -> int\n" +
+            "{\n" +
+            "    std::println(\"{}\", add(20, 22));\n" +
+            "    return 0;\n" +
+            "}\n";
+
+        File.WriteAllText(mainCppPath, source);
+    }
+
+    private static void RunGitCommand(string workingDirectory, params string[] args)
+    {
+        var result = RunProcess(workingDirectory, "git", args, throwOnFailure: false);
+        if (result.ExitCode == 0)
+            return;
+
+        throw new InvalidOperationException(
+            $"Command 'git {string.Join(' ', args)}' failed in '{workingDirectory}'. stderr: {result.StandardError}");
+    }
+
+    private static ProcessResult RunProcess(
+        string workingDirectory,
+        string executable,
+        IReadOnlyList<string> args,
+        bool throwOnFailure)
+    {
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = executable,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            WorkingDirectory = workingDirectory,
+        };
+
+        foreach (var arg in args)
+            startInfo.ArgumentList.Add(arg);
+
+        using var process = new Process { StartInfo = startInfo };
+        process.Start();
+        var standardOutput = process.StandardOutput.ReadToEnd();
+        var standardError = process.StandardError.ReadToEnd();
+        process.WaitForExit();
+
+        var result = new ProcessResult(process.ExitCode, standardOutput, standardError);
+        if (!throwOnFailure || result.ExitCode == 0)
+            return result;
+
+        throw new InvalidOperationException(
+            $"Command '{executable} {string.Join(' ', args)}' failed in '{workingDirectory}'. stderr: {standardError}");
+    }
+
     private static void CopyDirectoryRecursive(string sourceDirectory, string destinationDirectory)
     {
         var source = new DirectoryInfo(sourceDirectory);
@@ -536,4 +673,5 @@ public sealed class AbelCliIntegrationTests
     }
 
     private sealed record CliResult(int ExitCode, string StandardOutput, string StandardError);
+    private sealed record ProcessResult(int ExitCode, string StandardOutput, string StandardError);
 }

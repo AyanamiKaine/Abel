@@ -184,6 +184,8 @@ Dependency specs support optional variants:
 
 - `imgui` (base package)
 - `imgui/sdl3_renderer` (package variant)
+- `math_module@https://github.com/<owner>/math_module.git` (git-hosted Abel module)
+- `math_module@https://github.com/<owner>/math_module.git#v1.0.0` (git dependency pinned to tag/branch/commit)
 
 `abel add` supports typo suggestions and will prompt with `Did you mean ...` when possible.
 

@@ -44,6 +44,7 @@ public sealed class AbelRunner(bool verbose = false, string? buildConfiguration 
         OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
 
     private readonly Dictionary<string, ProjectConfig> Projects = new(PathComparer);
+    private readonly Dictionary<string, GitDependencyReference> _gitDependencyCache = new(NameComparer);
     private readonly PackageRegistry _registry = new();
     private readonly ChildProcessScope _childProcessScope = new();
     private readonly string? _requestedBuildConfiguration = NormalizeBuildConfigurationOrNull(buildConfiguration);
@@ -52,6 +53,7 @@ public sealed class AbelRunner(bool verbose = false, string? buildConfiguration 
     private bool _disposed;
 
     private sealed record LocalProjectReference(string DirectoryPath, ProjectConfig Config);
+    private sealed record GitDependencyReference(string Repository, string? GitTag, LocalProjectReference Project);
 
     public bool Verbose { get; set; } = verbose;
 
@@ -127,6 +129,8 @@ public sealed class AbelRunner(bool verbose = false, string? buildConfiguration 
 
         foreach (var project in Projects)
         {
+            _gitDependencyCache.Clear();
+
             var projectFilePath = project.Key;
             var projectConfig = project.Value;
             var localProjectIndex = BuildLocalProjectIndex(projectFilePath);
@@ -275,6 +279,8 @@ public sealed class AbelRunner(bool verbose = false, string? buildConfiguration 
                 projectFilePath,
                 projectConfig,
                 localProjectIndex);
+            var gitDependencies = await ResolveGitDependencies(projectFilePath, projectConfig, localInstallPrefix).ConfigureAwait(false);
+            MergeDependencies(localDependencies, gitDependencies);
 
             foreach (var localDependency in localDependencies.Values)
             {
@@ -413,7 +419,7 @@ public sealed class AbelRunner(bool verbose = false, string? buildConfiguration 
             ParseInstallProgress).ConfigureAwait(false);
     }
 
-    private IReadOnlyDictionary<string, LocalProjectReference> ResolveLocalDependencies(
+    private Dictionary<string, LocalProjectReference> ResolveLocalDependencies(
         string projectFilePath,
         ProjectConfig projectConfig,
         IReadOnlyDictionary<string, LocalProjectReference> localProjectIndex)
@@ -422,29 +428,186 @@ public sealed class AbelRunner(bool verbose = false, string? buildConfiguration 
 
         foreach (var dependencyText in projectConfig.Dependencies)
         {
-            var dependencySpec = DependencySpec.Parse(dependencyText);
+            var dependencySpec = ProjectDependencySpec.Parse(dependencyText);
 
-            if (_registry.IsKnownPackage(dependencySpec.PackageName))
+            if (dependencySpec.IsGit)
+                continue;
+
+            if (_registry.IsKnownPackage(dependencySpec.Name))
                 continue;
 
             if (dependencySpec.VariantName is not null)
             {
                 throw new InvalidOperationException(
-                    $"Dependency '{dependencyText}' uses variant syntax but '{dependencySpec.PackageName}' " +
+                    $"Dependency '{dependencyText}' uses variant syntax but '{dependencySpec.Name}' " +
                     "is not a known registry package.");
             }
 
-            if (!localProjectIndex.TryGetValue(dependencySpec.PackageName, out var localDependency))
+            if (!localProjectIndex.TryGetValue(dependencySpec.Name, out var localDependency))
                 continue;
 
             if (PathComparer.Equals(localDependency.DirectoryPath, projectFilePath))
                 continue;
 
-            localDependencies[dependencySpec.PackageName] = localDependency;
+            localDependencies[dependencySpec.Name] = localDependency;
         }
 
         return localDependencies;
     }
+
+    private async Task<IReadOnlyDictionary<string, LocalProjectReference>> ResolveGitDependencies(
+        string projectFilePath,
+        ProjectConfig projectConfig,
+        string localInstallPrefix)
+    {
+        var gitDependencies = new Dictionary<string, LocalProjectReference>(NameComparer);
+
+        foreach (var dependencyText in projectConfig.Dependencies)
+        {
+            var dependencySpec = ProjectDependencySpec.Parse(dependencyText);
+            if (!dependencySpec.IsGit)
+                continue;
+
+            var dependencyReference = await ResolveGitDependency(dependencySpec, localInstallPrefix).ConfigureAwait(false);
+            if (PathComparer.Equals(dependencyReference.DirectoryPath, projectFilePath))
+                continue;
+
+            gitDependencies[dependencySpec.Name] = dependencyReference;
+        }
+
+        return gitDependencies;
+    }
+
+    private async Task<LocalProjectReference> ResolveGitDependency(
+        ProjectDependencySpec dependencySpec,
+        string localInstallPrefix)
+    {
+        if (_gitDependencyCache.TryGetValue(dependencySpec.Name, out var cached))
+        {
+            EnsureGitDependencyMatchesCachedSource(dependencySpec, cached);
+            return cached.Project;
+        }
+
+        var dependencyDirectoryPath = GetGitDependencyDirectory(localInstallPrefix, dependencySpec.Name);
+        await EnsureGitRepositoryAvailable(dependencySpec, dependencyDirectoryPath).ConfigureAwait(false);
+
+        var projectFilePath = Path.Combine(dependencyDirectoryPath, "project.json");
+        if (!File.Exists(projectFilePath))
+        {
+            throw new InvalidOperationException(
+                $"Git dependency '{dependencySpec.Name}' from '{dependencySpec.GitRepository}' does not contain project.json at the repository root.");
+        }
+
+        var json = await File.ReadAllTextAsync(projectFilePath).ConfigureAwait(false);
+        var config = JsonSerializer.Deserialize<ProjectConfig>(json)
+                     ?? throw new InvalidOperationException($"Could not parse '{projectFilePath}'.");
+
+        if (!config.Name.Equals(dependencySpec.Name, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                $"Git dependency '{dependencySpec.Name}' points to project '{config.Name}'. " +
+                "Dependency name must match project.json name.");
+        }
+
+        var projectReference = new LocalProjectReference(dependencyDirectoryPath, config);
+        _gitDependencyCache[dependencySpec.Name] =
+            new GitDependencyReference(dependencySpec.GitRepository!, dependencySpec.GitTag, projectReference);
+
+        return projectReference;
+    }
+
+    private static void EnsureGitDependencyMatchesCachedSource(
+        ProjectDependencySpec dependencySpec,
+        GitDependencyReference cached)
+    {
+        var sameRepository = string.Equals(cached.Repository, dependencySpec.GitRepository, StringComparison.OrdinalIgnoreCase);
+        var sameTag = string.Equals(cached.GitTag, dependencySpec.GitTag, StringComparison.OrdinalIgnoreCase);
+
+        if (sameRepository && sameTag)
+            return;
+
+        throw new InvalidOperationException(
+            $"Dependency '{dependencySpec.Name}' was referenced multiple times with different git sources. " +
+            $"First: '{cached.Repository}{FormatGitTag(cached.GitTag)}'. " +
+            $"Later: '{dependencySpec.GitRepository}{FormatGitTag(dependencySpec.GitTag)}'.");
+    }
+
+    private async Task EnsureGitRepositoryAvailable(
+        ProjectDependencySpec dependencySpec,
+        string dependencyDirectoryPath)
+    {
+        var gitDirectory = Path.Combine(dependencyDirectoryPath, ".git");
+        if (!Directory.Exists(gitDirectory))
+        {
+            if (Directory.Exists(dependencyDirectoryPath) &&
+                Directory.EnumerateFileSystemEntries(dependencyDirectoryPath).Any())
+            {
+                throw new InvalidOperationException(
+                    $"Git dependency cache path '{dependencyDirectoryPath}' exists and is not a git repository.");
+            }
+
+            var cacheRoot = Path.GetDirectoryName(dependencyDirectoryPath);
+            if (!string.IsNullOrWhiteSpace(cacheRoot))
+                Directory.CreateDirectory(cacheRoot);
+
+            await ExecuteCommandAsync(
+                    "git",
+                    ["clone", "--recursive", dependencySpec.GitRepository!, dependencyDirectoryPath],
+                    Environment.CurrentDirectory,
+                    $"fetch git dependency {dependencySpec.Name}")
+                .ConfigureAwait(false);
+        }
+
+        if (string.IsNullOrWhiteSpace(dependencySpec.GitTag))
+            return;
+
+        await ExecuteCommandAsync(
+                "git",
+                ["-C", dependencyDirectoryPath, "checkout", dependencySpec.GitTag],
+                Environment.CurrentDirectory,
+                $"checkout git dependency {dependencySpec.Name}{FormatGitTag(dependencySpec.GitTag)}")
+            .ConfigureAwait(false);
+    }
+
+    private static string GetGitDependencyDirectory(string localInstallPrefix, string dependencyName)
+    {
+        var abelDirectory = Path.GetDirectoryName(localInstallPrefix) ?? localInstallPrefix;
+        var gitDependencyRoot = Path.Combine(abelDirectory, "git_deps");
+        Directory.CreateDirectory(gitDependencyRoot);
+        return Path.Combine(gitDependencyRoot, ToSafeDependencyDirectoryName(dependencyName));
+    }
+
+    private static string ToSafeDependencyDirectoryName(string dependencyName)
+    {
+        var invalidChars = Path.GetInvalidFileNameChars();
+        var safeChars = dependencyName
+            .Select(ch => invalidChars.Contains(ch) ? '_' : ch)
+            .ToArray();
+
+        var safeName = new string(safeChars).Trim();
+        return string.IsNullOrWhiteSpace(safeName) ? "git_dependency" : safeName;
+    }
+
+    private static void MergeDependencies(
+        Dictionary<string, LocalProjectReference> localDependencies,
+        IReadOnlyDictionary<string, LocalProjectReference> additionalDependencies)
+    {
+        foreach (var dependency in additionalDependencies)
+        {
+            if (localDependencies.TryGetValue(dependency.Key, out var existing) &&
+                !PathComparer.Equals(existing.DirectoryPath, dependency.Value.DirectoryPath))
+            {
+                throw new InvalidOperationException(
+                    $"Dependency '{dependency.Key}' resolves to multiple paths: " +
+                    $"'{existing.DirectoryPath}' and '{dependency.Value.DirectoryPath}'.");
+            }
+
+            localDependencies[dependency.Key] = dependency.Value;
+        }
+    }
+
+    private static string FormatGitTag(string? gitTag) =>
+        string.IsNullOrWhiteSpace(gitTag) ? "" : $"#{gitTag}";
 
     private static Dictionary<string, LocalProjectReference> BuildLocalProjectIndex(string rootProjectPath)
     {
@@ -848,8 +1011,11 @@ public sealed class AbelRunner(bool verbose = false, string? buildConfiguration 
 
         foreach (var dependencyText in projectConfig.Dependencies)
         {
-            var spec = DependencySpec.Parse(dependencyText);
-            CollectRegistryDependency(spec.PackageName, spec.VariantName, resolved, ordered);
+            var spec = ProjectDependencySpec.Parse(dependencyText);
+            if (spec.IsGit)
+                continue;
+
+            CollectRegistryDependency(spec.Name, spec.VariantName, resolved, ordered);
         }
 
         return ordered;

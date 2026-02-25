@@ -21,6 +21,7 @@ Configuration precedence for `build`/`run`: CLI (`--release/--debug/-c`) > `proj
 Legacy header/src layout: set `build.legacy_header_src_layout` to `true` in `project.json`.
 For `abel module`, `--project` is optional. Abel searches upward and uses the nearest parent `project.json` when omitted.
 `abel init` creates a default C++ `.gitignore` and runs `git init` automatically. If git is unavailable, initialization still succeeds and prints a warning.
+`project.json` dependencies also support git modules via `name@https://repo.git` and optional refs `name@https://repo.git#tag`.
 
 ## Path Resolution
 

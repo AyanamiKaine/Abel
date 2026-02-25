@@ -202,7 +202,7 @@ public class CmakeBuilder
     /// <param name="name">Logical name for CMake (used as the FetchContent identifier).</param>
     /// <param name="gitRepo">HTTPS URL of the git repository.</param>
     /// <param name="gitTag">Exact tag or commit hash to pin to.</param>
-    public CmakeBuilder AddFetchContent(string name, string gitRepo, string gitTag)
+    public CmakeBuilder AddFetchContent(string name, string gitRepo, string? gitTag = null)
     {
         _fetchContents.Add(new FetchContentDep(name, gitRepo, gitTag));
         return this;
@@ -453,8 +453,16 @@ public class CmakeBuilder
 
         foreach (var dependencyText in config.Dependencies)
         {
-            var dependencySpec = DependencySpec.Parse(dependencyText);
-            var package = registry?.Find(dependencySpec.PackageName);
+            var dependencySpec = ProjectDependencySpec.Parse(dependencyText);
+
+            if (dependencySpec.IsGit)
+            {
+                builder.AddFindPackage(dependencySpec.Name, required: true, configMode: true);
+                builder.AddLinkLibrary($"{dependencySpec.Name}::{dependencySpec.Name}");
+                continue;
+            }
+
+            var package = registry?.Find(dependencySpec.Name);
 
             if (package is not null && registry is not null)
             {
@@ -470,13 +478,13 @@ public class CmakeBuilder
                 if (dependencySpec.VariantName is not null)
                 {
                     throw new InvalidOperationException(
-                        $"Unknown package '{dependencySpec.PackageName}' in dependency '{dependencyText}'. " +
+                        $"Unknown package '{dependencySpec.Name}' in dependency '{dependencyText}'. " +
                         "Variant syntax is only supported for registry packages.");
                 }
 
                 // Unknown to registry: either local Abel package or system package.
-                builder.AddFindPackage(dependencySpec.PackageName, required: true, configMode: true);
-                builder.AddLinkLibrary($"{dependencySpec.PackageName}::{dependencySpec.PackageName}");
+                builder.AddFindPackage(dependencySpec.Name, required: true, configMode: true);
+                builder.AddLinkLibrary($"{dependencySpec.Name}::{dependencySpec.Name}");
             }
         }
 
@@ -741,12 +749,13 @@ public class CmakeBuilder
 
         foreach (var fc in _fetchContents)
         {
-            w.Line($"FetchContent_Declare(");
+            w.Line("FetchContent_Declare(");
             w.Line($"    {fc.Name}");
-            w.Line($"    GIT_REPOSITORY {fc.GitRepo}");
-            w.Line($"    GIT_TAG        {fc.GitTag}");
-            w.Line($"    GIT_SHALLOW    TRUE");
-            w.Line($")");
+            w.Line($"    GIT_REPOSITORY {EscapeCmakeArgument(fc.GitRepo)}");
+            if (!string.IsNullOrWhiteSpace(fc.GitTag))
+                w.Line($"    GIT_TAG        {EscapeCmakeArgument(fc.GitTag)}");
+            w.Line("    GIT_SHALLOW    TRUE");
+            w.Line(")");
         }
 
         var names = string.Join(" ", _fetchContents.Select(fc => fc.Name));
@@ -1214,7 +1223,7 @@ public class CmakeBuilder
     // ─── Internal types ──────────────────────────────────────────────
 
     private record FindPackageDep(string Name, bool Required, bool ConfigMode);
-    private record FetchContentDep(string Name, string GitRepo, string GitTag);
+    private record FetchContentDep(string Name, string GitRepo, string? GitTag);
     private record WrapperPackageDep(
         string Name,
         string GitRepo,
