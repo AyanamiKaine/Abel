@@ -237,7 +237,6 @@ Thumbs.db
             "}\n";
 
         var testCpp =
-            "#define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN\n" +
             "#include <doctest/doctest.h>\n\n" +
             "TEST_CASE(\"hello world\")\n" +
             "{\n" +
@@ -288,7 +287,6 @@ Thumbs.db
             "}\n";
 
         var testCpp =
-            "#define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN\n" +
             "#include <doctest/doctest.h>\n\n" +
             $"import {context.ModuleName};\n\n" +
             $"TEST_CASE(\"{context.ModuleName}\")\n" +

@@ -1205,6 +1205,12 @@ public class CmakeBuilder
             var sources = string.Join(" ", test.Sources);
             w.Line($"    add_executable({test.Name} {sources})");
 
+            // Compile the doctest implementation into this binary.
+            // doctest::doctest is a header-only interface target (adds include dirs only),
+            // so the implementation is compiled only when this definition is set.
+            // We set it here so that test files don't need the #define themselves.
+            w.Line($"    target_compile_definitions({test.Name} PRIVATE DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN)");
+
             // Link the main target (library only) + any test-specific libs (e.g. doctest)
             var allLibs = new List<string>();
             if (_outputType == OutputType.library)
