@@ -2,7 +2,7 @@
 
 Abel is an opinionated C++ build runner on top of CMake + Ninja. Its cool when you want to create a new modern C++ project using modules for example. IT COULD NEVER BE USED TO REPLACE ALREADY USED SOLUTIONS.
 
-Abel has only one real clear goal, be able to say `abel run` in a C++ project, and it just works. Sane defaults all around.
+Abel has only one real clear goal, be able to say `abel run` in a C++ project, and it just works. Sane defaults all around. If your ever thing "Mhh why doesn't this just work with Abel?" it's probably a bug that needs fixing asap.
 
 It provides a simple CLI for:
 
@@ -147,6 +147,7 @@ With build settings:
 ```
 
 Notes:
+
 - `build.default_configuration` is used when `abel build/run` is called without `--release`, `--debug`, or `--configuration`.
 - CLI configuration flags always override `project.json`.
 - Configuration keys under `build.configurations` support: `Debug`, `Release`, `RelWithDebInfo`, `MinSizeRel`.
@@ -227,5 +228,6 @@ Or push commit + tag immediately:
 ```
 
 Notes:
+
 - The script requires a clean git working tree.
 - The release workflow expects a matching git tag: `v<version>`.
