@@ -21,7 +21,7 @@ It provides a simple CLI for:
 Run:
 
 ```powershell
-abel check
+abel doctor
 ```
 
 to validate your local toolchain.
@@ -92,7 +92,9 @@ abel module gameplay --partition ecs --partition systems.pathing
 
 - `abel build [paths...] [--release|--debug|--configuration <name>] [--verbose]`
 - `abel run [paths...] [--release|--debug|--configuration <name>] [--verbose]`
-- `abel check [--verbose]`
+- `abel format [--verbose]`
+- `abel check [--configuration <name>] [--verbose]`
+- `abel doctor [--verbose]`
 - `abel list [--verbose]`
 - `abel search <query> [--verbose]`
 - `abel info <package[/variant]> [--verbose]`

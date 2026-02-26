@@ -6,7 +6,9 @@ Abel is an opinionated C++ build runner built around CMake + Ninja.
 
 - `abel build [paths...] [--release|--debug|--configuration <name>] [--verbose]`
 - `abel run [paths...] [--release|--debug|--configuration <name>] [--verbose]`
-- `abel check [--verbose]`
+- `abel format [--verbose]`
+- `abel check [--configuration <name>] [--verbose]`
+- `abel doctor [--verbose]`
 - `abel list [--verbose]`
 - `abel search <query> [--verbose]`
 - `abel info <package[/variant]> [--verbose]`
