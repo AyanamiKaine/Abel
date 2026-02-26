@@ -16,6 +16,13 @@ AccessModifierOffset: -4
 AllowShortFunctionsOnASingleLine: Empty
 """;
 
+    private const string DefaultClangTidy = """
+Checks: 'clang-diagnostic-*,clang-analyzer-*,bugprone-*,performance-*,readability-*,modernize-*,-modernize-use-trailing-return-type'
+WarningsAsErrors: ''
+HeaderFilterRegex: '.*'
+FormatStyle: 'none'
+""";
+
     private const string DefaultGitIgnore = """
 # Build outputs
 /build/
@@ -258,6 +265,7 @@ Thumbs.db
             new TemplateFile(testFile, testCpp),
             new TemplateFile(".gitignore", DefaultGitIgnore),
             new TemplateFile(".clang-format", DefaultClangFormat),
+            new TemplateFile(".clang-tidy", DefaultClangTidy),
         ];
     }
 
@@ -311,6 +319,7 @@ Thumbs.db
             new TemplateFile(testFile, testCpp),
             new TemplateFile(".gitignore", DefaultGitIgnore),
             new TemplateFile(".clang-format", DefaultClangFormat),
+            new TemplateFile(".clang-tidy", DefaultClangTidy),
         ];
     }
 

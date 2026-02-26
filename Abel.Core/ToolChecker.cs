@@ -20,7 +20,7 @@ public static class ToolChecker
     public static async Task<bool> CheckAll(bool verbose = false)
     {
         Console.ForegroundColor = ConsoleColor.Cyan;
-        Console.WriteLine("  [check] Verifying Abel build prerequisites...");
+        Console.WriteLine("  [doctor] Verifying Abel build prerequisites...");
         Console.ResetColor();
         Console.WriteLine("  [why]   Abel needs CMake (configure), Ninja (build), and at least one C++ compiler.");
 
@@ -34,6 +34,8 @@ public static class ToolChecker
             await Probe("ninja", "--version", ParseNinjaVersion),
             // ClangFormat - optional but recommended for formatting
             await Probe("clang-format", "--version", ParseClangFormatVersion),
+            // ClangTidy - optional but recommended for static analysis
+            await Probe("clang-tidy", "--version", ParseClangTidyVersion),
         };
 
         // C++ compiler — OS-specific
@@ -110,13 +112,13 @@ public static class ToolChecker
         if (allGood)
         {
             Console.ForegroundColor = ConsoleColor.Green;
-            Console.WriteLine("  [check] Environment is ready.");
+            Console.WriteLine("  [doctor] Environment is ready.");
             Console.ResetColor();
         }
         else if (!verbose)
         {
             Console.ForegroundColor = ConsoleColor.Yellow;
-            Console.WriteLine("  [check] Some prerequisites are missing. Run 'abel check --verbose' for paths/details.");
+            Console.WriteLine("  [doctor] Some prerequisites are missing. Run 'abel doctor --verbose' for paths/details.");
             Console.ResetColor();
         }
 
@@ -142,6 +144,11 @@ public static class ToolChecker
                 Purpose: "formats C++ source files",
                 Required: false,
                 MissingHint: "Install clang-format to use the 'abel format' command."),
+            new(
+                Name: "clang-tidy",
+                Purpose: "static analysis for C++ source files",
+                Required: false,
+                MissingHint: "Install clang-tidy to use the 'abel check' command."),
         };
 
         if (OperatingSystem.IsWindows())
@@ -319,6 +326,17 @@ public static class ToolChecker
                 return line.Trim();
         }
         return null;
+    }
+
+    // "LLVM version 18.1.3" or similar in clang-tidy
+    private static string? ParseClangTidyVersion(string output)
+    {
+        foreach (var line in output.Split('\n'))
+        {
+            if (line.Contains("LLVM version", StringComparison.OrdinalIgnoreCase))
+                return line.Trim();
+        }
+        return null; // fallback if clang-tidy output is different
     }
 
     // "clang version 18.1.3 (https://...)"

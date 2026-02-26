@@ -21,7 +21,8 @@ internal static class Program
             {
                 CommandKind.Help => PrintHelpAndReturnSuccess(),
                 CommandKind.Version => PrintVersionAndReturnSuccess(),
-                CommandKind.Check => await RunCheckAsync(command.Verbose).ConfigureAwait(false),
+                CommandKind.Doctor => await RunDoctorAsync(command.Verbose).ConfigureAwait(false),
+                CommandKind.Check => await RunCheckCommandAsync(command).ConfigureAwait(false),
                 CommandKind.Build => await RunBuildOrRunAsync(command, run: false).ConfigureAwait(false),
                 CommandKind.Run => await RunBuildOrRunAsync(command, run: true).ConfigureAwait(false),
                 CommandKind.Test => await RunTestAsync(command).ConfigureAwait(false),
@@ -85,7 +86,8 @@ internal static class Program
         Console.WriteLine("  build      Build one or more project directories");
         Console.WriteLine("  run        Build then run executable projects");
         Console.WriteLine("  test       Build then run tests with ctest");
-        Console.WriteLine("  check      Check required tools on PATH");
+        Console.WriteLine("  check      Run clang-tidy on C/C++ source files in a project");
+        Console.WriteLine("  doctor     Check required tools on PATH");
         Console.WriteLine("  list       List known registry packages");
         Console.WriteLine("  search     Search registry packages");
         Console.WriteLine("  info       Show detailed package metadata");
@@ -158,10 +160,16 @@ internal static class Program
         return ExitSuccess;
     }
 
-    private static async Task<int> RunCheckAsync(bool verbose)
+    private static async Task<int> RunDoctorAsync(bool verbose)
     {
         var ok = await ToolChecker.CheckAll(verbose).ConfigureAwait(false);
         return ok ? ExitSuccess : ExitRuntimeError;
+    }
+
+    private static async Task<int> RunCheckCommandAsync(ParsedCommand command)
+    {
+        var result = await ProjectLinter.TryCheckAsync(command.Arguments, command.Verbose, command.BuildConfiguration).ConfigureAwait(false);
+        return result ? ExitSuccess : ExitRuntimeError;
     }
 
     private static async Task<int> RunBuildOrRunAsync(ParsedCommand command, bool run)
@@ -411,6 +419,8 @@ internal static class Program
             return CommandKind.Run;
         if (commandText.Equals("test", StringComparison.OrdinalIgnoreCase))
             return CommandKind.Test;
+        if (commandText.Equals("doctor", StringComparison.OrdinalIgnoreCase))
+            return CommandKind.Doctor;
         if (commandText.Equals("check", StringComparison.OrdinalIgnoreCase))
             return CommandKind.Check;
         if (commandText.Equals("list", StringComparison.OrdinalIgnoreCase))
@@ -541,6 +551,7 @@ internal static class Program
     {
         Help,
         Version,
+        Doctor,
         Check,
         Build,
         Run,
