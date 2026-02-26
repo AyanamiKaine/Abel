@@ -65,7 +65,7 @@ jobs:
         run: dotnet build Abel/Abel.csproj -c Release
 
       - name: Check environment
-        run: dotnet run --project Abel/Abel.csproj -- check --verbose
+        run: dotnet run --project Abel/Abel.csproj -- doctor --verbose
 
       - name: Pack tool
         run: dotnet pack Abel/Abel.csproj -c Release -o artifacts/nupkg
