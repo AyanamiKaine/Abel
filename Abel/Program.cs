@@ -103,7 +103,7 @@ internal static class Program
         Console.WriteLine("  --release       Use Release configuration");
         Console.WriteLine("  --debug         Use Debug configuration");
         Console.WriteLine("  -c, --configuration <name>   Build config: Debug|Release|RelWithDebInfo|MinSizeRel");
-        Console.WriteLine("                 Default: project.json build.default_configuration, else Release");
+        Console.WriteLine("                 Default: project.json build.default_configuration, else Debug");
         Console.WriteLine();
     }
 

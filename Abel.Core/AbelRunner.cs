@@ -740,7 +740,7 @@ public sealed class AbelRunner(bool verbose = false, string? buildConfiguration 
 
         var configuredValue = projectConfig.Build?.DefaultConfiguration;
         if (string.IsNullOrWhiteSpace(configuredValue))
-            return "Release";
+            return "Debug";
 
         try
         {
