@@ -32,6 +32,8 @@ public static class ToolChecker
             await Probe("cmake", "--version", ParseCmakeVersion),
             // Ninja — required on all platforms
             await Probe("ninja", "--version", ParseNinjaVersion),
+            // ClangFormat - optional but recommended for formatting
+            await Probe("clang-format", "--version", ParseClangFormatVersion),
         };
 
         // C++ compiler — OS-specific
@@ -135,6 +137,11 @@ public static class ToolChecker
                 Purpose: "build executor used by Abel's generated build files",
                 Required: true,
                 MissingHint: "Install Ninja and make sure 'ninja' is on PATH."),
+            new(
+                Name: "clang-format",
+                Purpose: "formats C++ source files",
+                Required: false,
+                MissingHint: "Install clang-format to use the 'abel format' command."),
         };
 
         if (OperatingSystem.IsWindows())
@@ -302,6 +309,17 @@ public static class ToolChecker
     // "1.11.1" (ninja just prints the version number)
     private static string? ParseNinjaVersion(string output) =>
         output.Trim().Split('\n').FirstOrDefault()?.Trim();
+
+    // "clang-format version 18.1.3 (https://...)"
+    private static string? ParseClangFormatVersion(string output)
+    {
+        foreach (var line in output.Split('\n'))
+        {
+            if (line.Contains("clang-format version", StringComparison.OrdinalIgnoreCase))
+                return line.Trim();
+        }
+        return null;
+    }
 
     // "clang version 18.1.3 (https://...)"
     private static string? ParseClangVersion(string output)

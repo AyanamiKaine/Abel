@@ -31,6 +31,7 @@ internal static class Program
                 CommandKind.Init => RunInitCommand(command),
                 CommandKind.Add => RunAddCommand(command),
                 CommandKind.Module => RunModuleCommand(command),
+                CommandKind.Format => await RunFormatCommandAsync(command).ConfigureAwait(false),
                 _ => ExitUsageError
             };
         }
@@ -91,6 +92,7 @@ internal static class Program
         Console.WriteLine("  init       Create a new Abel project from a template");
         Console.WriteLine("  add        Add dependency entries to project.json");
         Console.WriteLine("  module     Create a local module and add it as dependency");
+        Console.WriteLine("  format     Format C/C++ source files in a project");
         Console.WriteLine("  help       Show this help");
         Console.WriteLine("  version    Show tool version");
         Console.WriteLine();
@@ -270,6 +272,12 @@ internal static class Program
         return result ? ExitSuccess : ExitUsageError;
     }
 
+    private static async Task<int> RunFormatCommandAsync(ParsedCommand command)
+    {
+        var result = await ProjectFormatter.TryFormatAsync(command.Arguments, command.Verbose).ConfigureAwait(false);
+        return result ? ExitSuccess : ExitRuntimeError;
+    }
+
     private static ParsedCommand ParseCommand(string[] args)
     {
         if (args.Length == 0)
@@ -418,6 +426,8 @@ internal static class Program
         if (commandText.Equals("module", StringComparison.OrdinalIgnoreCase) ||
             commandText.Equals("add-module", StringComparison.OrdinalIgnoreCase))
             return CommandKind.Module;
+        if (commandText.Equals("format", StringComparison.OrdinalIgnoreCase))
+            return CommandKind.Format;
         if (commandText.Equals("help", StringComparison.OrdinalIgnoreCase))
             return CommandKind.Help;
         if (commandText.Equals("version", StringComparison.OrdinalIgnoreCase))
@@ -541,6 +551,7 @@ internal static class Program
         Init,
         Add,
         Module,
+        Format,
     }
 
     private sealed record ParsedCommand(

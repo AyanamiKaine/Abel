@@ -8,6 +8,14 @@ internal static class ProjectInitializer
 {
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
     private const int GitInitTimeoutMs = 5000;
+    private const string DefaultClangFormat = """
+BasedOnStyle: LLVM
+IndentWidth: 4
+ColumnLimit: 120
+AccessModifierOffset: -4
+AllowShortFunctionsOnASingleLine: Empty
+""";
+
     private const string DefaultGitIgnore = """
 # Build outputs
 /build/
@@ -249,6 +257,7 @@ Thumbs.db
             new TemplateFile("main.cpp", mainCpp),
             new TemplateFile(testFile, testCpp),
             new TemplateFile(".gitignore", DefaultGitIgnore),
+            new TemplateFile(".clang-format", DefaultClangFormat),
         ];
     }
 
@@ -301,6 +310,7 @@ Thumbs.db
             new TemplateFile(implFile, moduleImpl),
             new TemplateFile(testFile, testCpp),
             new TemplateFile(".gitignore", DefaultGitIgnore),
+            new TemplateFile(".clang-format", DefaultClangFormat),
         ];
     }
 
