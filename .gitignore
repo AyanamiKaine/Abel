@@ -177,7 +177,7 @@ _NCrunch*
 build/
 Build/
 build-*/
-
+.abel/
 # CMake generated files
 CMakeFiles/
 CMakeCache.txt
