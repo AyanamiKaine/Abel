@@ -10,3 +10,10 @@ target_sources(hello_world
     PRIVATE
         main.cpp
 )
+
+# Sane warning defaults for project sources.
+if(MSVC)
+    target_compile_options(hello_world PRIVATE /W4 /permissive-)
+else()
+    target_compile_options(hello_world PRIVATE -Wall -Wextra -Wpedantic)
+endif()

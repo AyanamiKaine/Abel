@@ -26,6 +26,13 @@ target_sources(sdl_example
     PRIVATE
         main.cpp
 )
+
+# Sane warning defaults for project sources.
+if(MSVC)
+    target_compile_options(sdl_example PRIVATE /W4 /permissive-)
+else()
+    target_compile_options(sdl_example PRIVATE -Wall -Wextra -Wpedantic)
+endif()
 target_link_libraries(sdl_example PRIVATE
     SDL3::SDL3
 )

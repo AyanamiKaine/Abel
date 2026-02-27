@@ -14,6 +14,13 @@ target_sources(log
 )
 target_compile_features(log PUBLIC cxx_std_23)
 
+# Sane warning defaults for project sources.
+if(MSVC)
+    target_compile_options(log PRIVATE /W4 /permissive-)
+else()
+    target_compile_options(log PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
 include(GNUInstallDirs)
 
 install(TARGETS log

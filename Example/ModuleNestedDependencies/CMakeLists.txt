@@ -15,6 +15,13 @@ target_sources(math_module
         src/math_impl.cpp
 )
 target_compile_features(math_module PUBLIC cxx_std_23)
+
+# Sane warning defaults for project sources.
+if(MSVC)
+    target_compile_options(math_module PRIVATE /W4 /permissive-)
+else()
+    target_compile_options(math_module PRIVATE -Wall -Wextra -Wpedantic)
+endif()
 target_link_libraries(math_module PUBLIC
     log::log
 )

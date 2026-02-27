@@ -66,6 +66,13 @@ target_sources(imgui_flecs_sdl_demo
     PRIVATE
         main.cpp
 )
+
+# Sane warning defaults for project sources.
+if(MSVC)
+    target_compile_options(imgui_flecs_sdl_demo PRIVATE /W4 /permissive-)
+else()
+    target_compile_options(imgui_flecs_sdl_demo PRIVATE -Wall -Wextra -Wpedantic)
+endif()
 target_link_libraries(imgui_flecs_sdl_demo PRIVATE
     SDL3::SDL3
     imgui::imgui
