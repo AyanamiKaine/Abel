@@ -7,6 +7,7 @@ module;
 #include <memory>
 #include <memory_resource>
 #include <array>
+#include <deque>
 #include <optional>
 #include <span>
 #include <string>
@@ -77,7 +78,10 @@ enum class ErrorCode : std::uint8_t
     invalid_shift_amount = 17,
     invalid_bytecode_magic = 18,
     unsupported_bytecode_version = 19,
-    malformed_bytecode = 20
+    malformed_bytecode = 20,
+    arithmetic_overflow = 21,
+    native_reentrancy = 22,
+    bytecode_limit_exceeded = 23
 };
 
 struct Error final
@@ -503,7 +507,7 @@ private:
     Arena arena_;
     std::vector<Value> stack_;
     std::vector<Value> inputs_;
-    std::vector<NativeBinding> native_bindings_;
+    std::deque<NativeBinding> native_bindings_;
 
     struct CallFrame final
     {
@@ -515,6 +519,8 @@ private:
     std::vector<CallFrame> call_frames_;
     std::size_t step_budget_ = 0;
     std::move_only_function<void(const TraceEvent&)> trace_sink_;
+    std::uint64_t native_bindings_generation_ = 0;
+    std::size_t native_dispatch_depth_ = 0;
     bool profiling_enabled_ = false;
     ProfileStats profile_stats_ {};
 };

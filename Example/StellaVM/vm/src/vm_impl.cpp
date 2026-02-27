@@ -1,5 +1,6 @@
 module;
 #include <algorithm>
+#include <bit>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -45,6 +46,12 @@ enum class ConstantTag : std::uint8_t
     buffer = 4
 };
 
+inline constexpr std::uint32_t bytecode_max_instruction_count = 1'000'000U;
+inline constexpr std::uint32_t bytecode_max_constant_count = 1'000'000U;
+inline constexpr std::uint32_t bytecode_max_function_count = 250'000U;
+inline constexpr std::uint32_t bytecode_max_blob_bytes = 32U * 1024U * 1024U;
+inline constexpr std::uint64_t bytecode_max_total_bytes = 256ULL * 1024ULL * 1024ULL;
+
 class ByteWriter final
 {
 public:
@@ -55,27 +62,34 @@ public:
 
     void write_u16(std::uint16_t value)
     {
-        write_raw(value);
+        bytes_.push_back(std::byte {static_cast<std::uint8_t>(value & 0xFFU)});
+        bytes_.push_back(std::byte {static_cast<std::uint8_t>((value >> 8U) & 0xFFU)});
     }
 
     void write_u32(std::uint32_t value)
     {
-        write_raw(value);
+        for (std::uint32_t shift = 0; shift < 32; shift += 8)
+        {
+            bytes_.push_back(std::byte {static_cast<std::uint8_t>((value >> shift) & 0xFFU)});
+        }
     }
 
     void write_u64(std::uint64_t value)
     {
-        write_raw(value);
+        for (std::uint32_t shift = 0; shift < 64; shift += 8)
+        {
+            bytes_.push_back(std::byte {static_cast<std::uint8_t>((value >> shift) & 0xFFULL)});
+        }
     }
 
     void write_i64(std::int64_t value)
     {
-        write_raw(value);
+        write_u64(static_cast<std::uint64_t>(value));
     }
 
     void write_f64(double value)
     {
-        write_raw(value);
+        write_u64(std::bit_cast<std::uint64_t>(value));
     }
 
     void write_bytes(std::span<const std::byte> bytes)
@@ -94,14 +108,6 @@ public:
     }
 
 private:
-    template <typename T>
-    void write_raw(const T value)
-    {
-        constexpr std::size_t size = sizeof(T);
-        const auto* raw = reinterpret_cast<const std::byte*>(&value);
-        bytes_.insert(bytes_.end(), raw, raw + size);
-    }
-
     std::vector<std::byte> bytes_ {};
 };
 
@@ -115,32 +121,81 @@ public:
 
     [[nodiscard]] auto read_u8(std::uint8_t& value) -> bool
     {
-        return read_raw(value);
+        if (remaining() < 1)
+        {
+            return false;
+        }
+        value = std::to_integer<std::uint8_t>(bytes_[offset_]);
+        offset_ += 1;
+        return true;
     }
 
     [[nodiscard]] auto read_u16(std::uint16_t& value) -> bool
     {
-        return read_raw(value);
+        if (remaining() < 2)
+        {
+            return false;
+        }
+
+        value = 0;
+        value |= static_cast<std::uint16_t>(std::to_integer<std::uint8_t>(bytes_[offset_]));
+        value |= static_cast<std::uint16_t>(std::to_integer<std::uint8_t>(bytes_[offset_ + 1])) << 8U;
+        offset_ += 2;
+        return true;
     }
 
     [[nodiscard]] auto read_u32(std::uint32_t& value) -> bool
     {
-        return read_raw(value);
+        if (remaining() < 4)
+        {
+            return false;
+        }
+
+        value = 0;
+        for (std::uint32_t i = 0; i < 4; ++i)
+        {
+            value |= static_cast<std::uint32_t>(std::to_integer<std::uint8_t>(bytes_[offset_ + i])) << (i * 8U);
+        }
+        offset_ += 4;
+        return true;
     }
 
     [[nodiscard]] auto read_u64(std::uint64_t& value) -> bool
     {
-        return read_raw(value);
+        if (remaining() < 8)
+        {
+            return false;
+        }
+
+        value = 0;
+        for (std::uint32_t i = 0; i < 8; ++i)
+        {
+            value |= static_cast<std::uint64_t>(std::to_integer<std::uint8_t>(bytes_[offset_ + i])) << (i * 8U);
+        }
+        offset_ += 8;
+        return true;
     }
 
     [[nodiscard]] auto read_i64(std::int64_t& value) -> bool
     {
-        return read_raw(value);
+        std::uint64_t raw = 0;
+        if (!read_u64(raw))
+        {
+            return false;
+        }
+        value = static_cast<std::int64_t>(raw);
+        return true;
     }
 
     [[nodiscard]] auto read_f64(double& value) -> bool
     {
-        return read_raw(value);
+        std::uint64_t raw = 0;
+        if (!read_u64(raw))
+        {
+            return false;
+        }
+        value = std::bit_cast<double>(raw);
+        return true;
     }
 
     [[nodiscard]] auto read_bytes(const std::size_t count, std::span<const std::byte>& bytes) -> bool
@@ -161,23 +216,170 @@ public:
     }
 
 private:
-    template <typename T>
-    [[nodiscard]] auto read_raw(T& value) -> bool
-    {
-        constexpr std::size_t size = sizeof(T);
-        if (remaining() < size)
-        {
-            return false;
-        }
-
-        std::memcpy(&value, bytes_.data() + offset_, size);
-        offset_ += size;
-        return true;
-    }
-
     std::span<const std::byte> bytes_ {};
     std::size_t offset_ = 0;
 };
+
+[[nodiscard]] auto checked_add_i64(const std::int64_t lhs, const std::int64_t rhs) -> Result<std::int64_t>
+{
+#if defined(__clang__) || defined(__GNUC__)
+    std::int64_t out = 0;
+    if (__builtin_add_overflow(lhs, rhs, &out))
+    {
+        return make_unexpected(ErrorCode::arithmetic_overflow, "add_i64 overflow.");
+    }
+    return out;
+#else
+    if ((rhs > 0 && lhs > (std::numeric_limits<std::int64_t>::max)() - rhs) ||
+        (rhs < 0 && lhs < (std::numeric_limits<std::int64_t>::min)() - rhs))
+    {
+        return make_unexpected(ErrorCode::arithmetic_overflow, "add_i64 overflow.");
+    }
+    return lhs + rhs;
+#endif
+}
+
+[[nodiscard]] auto checked_sub_i64(const std::int64_t lhs, const std::int64_t rhs) -> Result<std::int64_t>
+{
+#if defined(__clang__) || defined(__GNUC__)
+    std::int64_t out = 0;
+    if (__builtin_sub_overflow(lhs, rhs, &out))
+    {
+        return make_unexpected(ErrorCode::arithmetic_overflow, "sub_i64 overflow.");
+    }
+    return out;
+#else
+    if ((rhs < 0 && lhs > (std::numeric_limits<std::int64_t>::max)() + rhs) ||
+        (rhs > 0 && lhs < (std::numeric_limits<std::int64_t>::min)() + rhs))
+    {
+        return make_unexpected(ErrorCode::arithmetic_overflow, "sub_i64 overflow.");
+    }
+    return lhs - rhs;
+#endif
+}
+
+[[nodiscard]] auto checked_mul_i64(const std::int64_t lhs, const std::int64_t rhs) -> Result<std::int64_t>
+{
+#if defined(__clang__) || defined(__GNUC__)
+    std::int64_t out = 0;
+    if (__builtin_mul_overflow(lhs, rhs, &out))
+    {
+        return make_unexpected(ErrorCode::arithmetic_overflow, "mul_i64 overflow.");
+    }
+    return out;
+#else
+    if (lhs == 0 || rhs == 0)
+    {
+        return std::int64_t {0};
+    }
+
+    if (lhs == -1 && rhs == (std::numeric_limits<std::int64_t>::min)())
+    {
+        return make_unexpected(ErrorCode::arithmetic_overflow, "mul_i64 overflow.");
+    }
+    if (rhs == -1 && lhs == (std::numeric_limits<std::int64_t>::min)())
+    {
+        return make_unexpected(ErrorCode::arithmetic_overflow, "mul_i64 overflow.");
+    }
+
+    if (lhs > 0)
+    {
+        if ((rhs > 0 && lhs > (std::numeric_limits<std::int64_t>::max)() / rhs) ||
+            (rhs < 0 && rhs < (std::numeric_limits<std::int64_t>::min)() / lhs))
+        {
+            return make_unexpected(ErrorCode::arithmetic_overflow, "mul_i64 overflow.");
+        }
+    }
+    else
+    {
+        if ((rhs > 0 && lhs < (std::numeric_limits<std::int64_t>::min)() / rhs) ||
+            (rhs < 0 && lhs < (std::numeric_limits<std::int64_t>::max)() / rhs))
+        {
+            return make_unexpected(ErrorCode::arithmetic_overflow, "mul_i64 overflow.");
+        }
+    }
+
+    return lhs * rhs;
+#endif
+}
+
+[[nodiscard]] auto checked_mod_i64(const std::int64_t lhs, const std::int64_t rhs) -> Result<std::int64_t>
+{
+    if (rhs == 0)
+    {
+        return make_unexpected(ErrorCode::division_by_zero, "mod_i64 divisor cannot be zero.");
+    }
+    if (lhs == (std::numeric_limits<std::int64_t>::min)() && rhs == -1)
+    {
+        return make_unexpected(ErrorCode::arithmetic_overflow, "mod_i64 overflow.");
+    }
+    return lhs % rhs;
+}
+
+[[nodiscard]] auto checked_shl_i64(const std::int64_t lhs, const std::int64_t rhs) -> Result<std::int64_t>
+{
+    if (rhs < 0 || rhs > 63)
+    {
+        return make_unexpected(ErrorCode::invalid_shift_amount, "shl_i64 shift amount must be in [0, 63].");
+    }
+    if (lhs < 0)
+    {
+        return make_unexpected(ErrorCode::arithmetic_overflow, "shl_i64 requires non-negative lhs.");
+    }
+    if (rhs == 0)
+    {
+        return lhs;
+    }
+
+    const std::int64_t max_value = (std::numeric_limits<std::int64_t>::max)();
+    if (lhs > (max_value >> rhs))
+    {
+        return make_unexpected(ErrorCode::arithmetic_overflow, "shl_i64 overflow.");
+    }
+    return static_cast<std::int64_t>(lhs << rhs);
+}
+
+[[nodiscard]] auto checked_shr_i64(const std::int64_t lhs, const std::int64_t rhs) -> Result<std::int64_t>
+{
+    if (rhs < 0 || rhs > 63)
+    {
+        return make_unexpected(ErrorCode::invalid_shift_amount, "shr_i64 shift amount must be in [0, 63].");
+    }
+    if (rhs == 0)
+    {
+        return lhs;
+    }
+
+    const std::uint64_t bits = static_cast<std::uint64_t>(lhs);
+    if (lhs >= 0)
+    {
+        return static_cast<std::int64_t>(bits >> rhs);
+    }
+
+    const std::uint64_t shifted = bits >> rhs;
+    const std::uint64_t sign_mask = (~std::uint64_t {0}) << (64 - rhs);
+    return static_cast<std::int64_t>(shifted | sign_mask);
+}
+
+[[nodiscard]] auto checked_mul_u64(
+    const std::uint64_t lhs,
+    const std::uint64_t rhs,
+    std::uint64_t& out) -> bool
+{
+    if (lhs == 0 || rhs == 0)
+    {
+        out = 0;
+        return true;
+    }
+
+    if (lhs > (std::numeric_limits<std::uint64_t>::max)() / rhs)
+    {
+        return false;
+    }
+
+    out = lhs * rhs;
+    return true;
+}
 } // namespace
 
 MoveBuffer::MoveBuffer(std::size_t byte_count)
@@ -591,6 +793,15 @@ auto Program::add_function(std::uint32_t entry, std::uint32_t arity, std::uint32
 
 auto serialize_program(const Program& program) -> Result<MoveBuffer>
 {
+    if (program.code.size() > bytecode_max_instruction_count ||
+        program.constants.size() > bytecode_max_constant_count ||
+        program.functions.size() > bytecode_max_function_count)
+    {
+        return make_unexpected(
+            ErrorCode::bytecode_limit_exceeded,
+            "Program exceeds configured bytecode limits.");
+    }
+
     if (program.code.size() > std::numeric_limits<std::uint32_t>::max() ||
         program.constants.size() > std::numeric_limits<std::uint32_t>::max() ||
         program.functions.size() > std::numeric_limits<std::uint32_t>::max())
@@ -641,11 +852,10 @@ auto serialize_program(const Program& program) -> Result<MoveBuffer>
                 return std::unexpected(text_result.error());
             }
 
-            if (text_result->size() > std::numeric_limits<std::uint32_t>::max())
+            if (text_result->size() > bytecode_max_blob_bytes ||
+                text_result->size() > std::numeric_limits<std::uint32_t>::max())
             {
-                return make_unexpected(
-                    ErrorCode::malformed_bytecode,
-                    "String constant exceeds bytecode format size limits.");
+                return make_unexpected(ErrorCode::bytecode_limit_exceeded, "String constant exceeds size limits.");
             }
 
             writer.write_u8(static_cast<std::uint8_t>(ConstantTag::string));
@@ -657,11 +867,10 @@ auto serialize_program(const Program& program) -> Result<MoveBuffer>
         if (constant.is_buffer())
         {
             const MoveBuffer& buffer = constant.as_buffer();
-            if (buffer.size > std::numeric_limits<std::uint32_t>::max())
+            if (buffer.size > bytecode_max_blob_bytes ||
+                buffer.size > std::numeric_limits<std::uint32_t>::max())
             {
-                return make_unexpected(
-                    ErrorCode::malformed_bytecode,
-                    "Buffer constant exceeds bytecode format size limits.");
+                return make_unexpected(ErrorCode::bytecode_limit_exceeded, "Buffer constant exceeds size limits.");
             }
 
             writer.write_u8(static_cast<std::uint8_t>(ConstantTag::buffer));
@@ -682,11 +891,21 @@ auto serialize_program(const Program& program) -> Result<MoveBuffer>
         writer.write_u32(function.local_count);
     }
 
-    return writer.finish();
+    MoveBuffer encoded = writer.finish();
+    if (encoded.size > bytecode_max_total_bytes)
+    {
+        return make_unexpected(ErrorCode::bytecode_limit_exceeded, "Serialized bytecode exceeds maximum size.");
+    }
+    return encoded;
 }
 
 auto deserialize_program(std::span<const std::byte> bytes) -> Result<Program>
 {
+    if (bytes.size() > bytecode_max_total_bytes)
+    {
+        return make_unexpected(ErrorCode::bytecode_limit_exceeded, "Bytecode payload exceeds maximum size.");
+    }
+
     ByteReader reader(bytes);
 
     std::uint32_t magic = 0;
@@ -712,6 +931,31 @@ auto deserialize_program(std::span<const std::byte> bytes) -> Result<Program>
         return make_unexpected(
             ErrorCode::unsupported_bytecode_version,
             "Unsupported bytecode version.");
+    }
+    if (reserved != 0)
+    {
+        return make_unexpected(ErrorCode::malformed_bytecode, "Reserved bytecode header bits must be zero.");
+    }
+
+    if (instruction_count > bytecode_max_instruction_count ||
+        constant_count > bytecode_max_constant_count ||
+        function_count > bytecode_max_function_count)
+    {
+        return make_unexpected(ErrorCode::bytecode_limit_exceeded, "Bytecode header exceeds configured limits.");
+    }
+
+    std::uint64_t instruction_bytes = 0;
+    std::uint64_t function_bytes = 0;
+    if (!checked_mul_u64(static_cast<std::uint64_t>(instruction_count), 5ULL, instruction_bytes) ||
+        !checked_mul_u64(static_cast<std::uint64_t>(function_count), 12ULL, function_bytes))
+    {
+        return make_unexpected(ErrorCode::malformed_bytecode, "Bytecode section sizes overflow.");
+    }
+
+    const std::uint64_t minimum_remaining = instruction_bytes + function_bytes + constant_count;
+    if (minimum_remaining > reader.remaining())
+    {
+        return make_unexpected(ErrorCode::malformed_bytecode, "Bytecode payload is truncated.");
     }
 
     Program program;
@@ -771,6 +1015,10 @@ auto deserialize_program(std::span<const std::byte> bytes) -> Result<Program>
                 {
                     return make_unexpected(ErrorCode::malformed_bytecode, "String constant length is truncated.");
                 }
+                if (length > bytecode_max_blob_bytes)
+                {
+                    return make_unexpected(ErrorCode::bytecode_limit_exceeded, "String constant exceeds size limits.");
+                }
 
                 std::span<const std::byte> text_bytes;
                 if (!reader.read_bytes(length, text_bytes))
@@ -793,6 +1041,10 @@ auto deserialize_program(std::span<const std::byte> bytes) -> Result<Program>
                 if (!reader.read_u32(length))
                 {
                     return make_unexpected(ErrorCode::malformed_bytecode, "Buffer constant length is truncated.");
+                }
+                if (length > bytecode_max_blob_bytes)
+                {
+                    return make_unexpected(ErrorCode::bytecode_limit_exceeded, "Buffer constant exceeds size limits.");
                 }
 
                 std::span<const std::byte> payload;
@@ -864,6 +1116,7 @@ auto NativeBindingBuilder::arity(const std::size_t expected_arity) -> NativeBind
 auto VM::bind_native(std::string name, std::size_t arity, NativeFunction function) -> std::size_t
 {
     native_bindings_.push_back({std::move(name), arity, std::move(function)});
+    ++native_bindings_generation_;
     return native_bindings_.size() - 1;
 }
 
@@ -971,237 +1224,304 @@ auto VM::verify(const Program& program, std::size_t available_inputs) const -> V
         }
     }
 
-    std::vector<std::optional<std::size_t>> stack_depth_at_pc(program.code.size());
-    std::optional<std::size_t> stack_depth_at_end;
-    std::vector<std::size_t> worklist;
-    worklist.reserve(program.code.size());
+    const auto verify_entry =
+        [&](const std::size_t entry_pc,
+            const std::size_t initial_stack_depth,
+            const std::optional<std::size_t> frame_local_count) -> VoidResult {
+        std::vector<std::optional<std::size_t>> stack_depth_at_pc(program.code.size());
+        std::optional<std::size_t> stack_depth_at_end;
+        std::vector<std::size_t> worklist;
+        worklist.reserve(program.code.size());
 
-    const auto enqueue_successor = [&](const std::size_t pc, const std::size_t depth) -> VoidResult {
-        if (pc == program.code.size())
-        {
-            if (!stack_depth_at_end.has_value())
+        const auto enqueue_successor = [&](const std::size_t pc, const std::size_t depth) -> VoidResult {
+            if (pc == program.code.size())
             {
-                stack_depth_at_end = depth;
+                if (frame_local_count.has_value())
+                {
+                    return make_unexpected(
+                        ErrorCode::missing_call_frame,
+                        "Function can fall through bytecode end without ret.");
+                }
+
+                if (!stack_depth_at_end.has_value())
+                {
+                    stack_depth_at_end = depth;
+                    return {};
+                }
+
+                if (stack_depth_at_end.value() != depth)
+                {
+                    return make_unexpected(
+                        ErrorCode::verification_failed,
+                        "Inconsistent stack depth at implicit program end.");
+                }
+
                 return {};
             }
 
-            if (stack_depth_at_end.value() != depth)
+            if (pc > program.code.size())
+            {
+                return make_unexpected(
+                    ErrorCode::invalid_jump_target,
+                    "Jump target points past end of bytecode.");
+            }
+
+            std::optional<std::size_t>& known_depth = stack_depth_at_pc[pc];
+            if (!known_depth.has_value())
+            {
+                known_depth = depth;
+                worklist.push_back(pc);
+                return {};
+            }
+
+            if (known_depth.value() != depth)
             {
                 return make_unexpected(
                     ErrorCode::verification_failed,
-                    "Inconsistent stack depth at implicit program end.");
+                    "Inconsistent stack depth across control-flow merge.");
             }
 
             return {};
+        };
+
+        {
+            const auto entry = enqueue_successor(entry_pc, initial_stack_depth);
+            if (!entry.has_value())
+            {
+                return std::unexpected(entry.error());
+            }
         }
 
-        if (pc > program.code.size())
+        while (!worklist.empty())
         {
-            return make_unexpected(
-                ErrorCode::invalid_jump_target,
-                "Jump target points past end of bytecode.");
-        }
+            const std::size_t pc = worklist.back();
+            worklist.pop_back();
 
-        std::optional<std::size_t>& known_depth = stack_depth_at_pc[pc];
-        if (!known_depth.has_value())
-        {
-            known_depth = depth;
-            worklist.push_back(pc);
-            return {};
-        }
+            const Instruction& instruction = program.code[pc];
+            const std::size_t stack_depth = stack_depth_at_pc[pc].value_or(0);
 
-        if (known_depth.value() != depth)
-        {
-            return make_unexpected(
-                ErrorCode::verification_failed,
-                "Inconsistent stack depth across control-flow merge.");
+            std::size_t pops = 0;
+            std::size_t pushes = 0;
+            std::optional<std::size_t> explicit_target;
+            bool has_fallthrough = true;
+
+            switch (instruction.opcode)
+            {
+                case OpCode::push_constant:
+                {
+                    if (instruction.operand >= program.constants.size())
+                    {
+                        return make_unexpected(
+                            ErrorCode::invalid_constant_index,
+                            "push_constant operand out of range during verification.");
+                    }
+                    pushes = 1;
+                    break;
+                }
+                case OpCode::push_input:
+                {
+                    if (instruction.operand >= available_inputs)
+                    {
+                        return make_unexpected(
+                            ErrorCode::invalid_input_index,
+                            "push_input operand out of range during verification.");
+                    }
+                    pushes = 1;
+                    break;
+                }
+                case OpCode::add_i64:
+                case OpCode::sub_i64:
+                case OpCode::mul_i64:
+                case OpCode::mod_i64:
+                case OpCode::cmp_eq_i64:
+                case OpCode::cmp_lt_i64:
+                case OpCode::and_i64:
+                case OpCode::or_i64:
+                case OpCode::xor_i64:
+                case OpCode::shl_i64:
+                case OpCode::shr_i64:
+                {
+                    pops = 2;
+                    pushes = 1;
+                    break;
+                }
+                case OpCode::call_native:
+                {
+                    if (instruction.operand >= native_bindings_.size())
+                    {
+                        return make_unexpected(
+                            ErrorCode::invalid_native_index,
+                            "call_native operand out of range during verification.");
+                    }
+                    if (!native_bindings_[instruction.operand].function)
+                    {
+                        return make_unexpected(
+                            ErrorCode::empty_native_binding,
+                            "call_native resolved to empty native binding during verification.");
+                    }
+                    pops = native_bindings_[instruction.operand].arity;
+                    pushes = 1;
+                    break;
+                }
+                case OpCode::jump:
+                {
+                    explicit_target = static_cast<std::size_t>(instruction.operand);
+                    has_fallthrough = false;
+                    break;
+                }
+                case OpCode::jump_if_true:
+                {
+                    pops = 1;
+                    explicit_target = static_cast<std::size_t>(instruction.operand);
+                    has_fallthrough = true;
+                    break;
+                }
+                case OpCode::dup:
+                {
+                    if (stack_depth == 0)
+                    {
+                        return make_unexpected(
+                            ErrorCode::stack_underflow,
+                            "dup requires at least one value on stack.");
+                    }
+                    pushes = 1;
+                    break;
+                }
+                case OpCode::pop:
+                {
+                    pops = 1;
+                    break;
+                }
+                case OpCode::call:
+                {
+                    if (instruction.operand >= program.functions.size())
+                    {
+                        return make_unexpected(
+                            ErrorCode::invalid_function_index,
+                            "call operand out of range during verification.");
+                    }
+
+                    const auto& function = program.functions[instruction.operand];
+                    if (function.local_count < function.arity)
+                    {
+                        return make_unexpected(
+                            ErrorCode::invalid_function_signature,
+                            "Function local_count must be >= arity.");
+                    }
+
+                    pops = function.arity;
+                    pushes = 1;
+                    has_fallthrough = true;
+                    break;
+                }
+                case OpCode::ret:
+                {
+                    if (!frame_local_count.has_value())
+                    {
+                        return make_unexpected(ErrorCode::missing_call_frame, "ret is only valid inside function code.");
+                    }
+                    pops = 1;
+                    has_fallthrough = false;
+                    break;
+                }
+                case OpCode::load_local:
+                {
+                    if (!frame_local_count.has_value())
+                    {
+                        return make_unexpected(
+                            ErrorCode::missing_call_frame,
+                            "load_local requires function frame context.");
+                    }
+                    if (instruction.operand >= frame_local_count.value())
+                    {
+                        return make_unexpected(
+                            ErrorCode::invalid_local_index,
+                            "load_local operand out of range during verification.");
+                    }
+                    pushes = 1;
+                    break;
+                }
+                case OpCode::store_local:
+                {
+                    if (!frame_local_count.has_value())
+                    {
+                        return make_unexpected(
+                            ErrorCode::missing_call_frame,
+                            "store_local requires function frame context.");
+                    }
+                    if (instruction.operand >= frame_local_count.value())
+                    {
+                        return make_unexpected(
+                            ErrorCode::invalid_local_index,
+                            "store_local operand out of range during verification.");
+                    }
+                    pops = 1;
+                    break;
+                }
+                case OpCode::halt:
+                {
+                    has_fallthrough = false;
+                    break;
+                }
+                default:
+                {
+                    return make_unexpected(ErrorCode::unknown_opcode, "Unknown opcode during verification.");
+                }
+            }
+
+            if (stack_depth < pops)
+            {
+                return make_unexpected(
+                    ErrorCode::stack_underflow,
+                    "Instruction would underflow stack during verification.");
+            }
+
+            const std::size_t next_depth = (stack_depth - pops) + pushes;
+
+            if (explicit_target.has_value())
+            {
+                if (explicit_target.value() >= program.code.size())
+                {
+                    return make_unexpected(
+                        ErrorCode::invalid_jump_target,
+                        "Jump target out of range during verification.");
+                }
+
+                const auto target_result = enqueue_successor(explicit_target.value(), next_depth);
+                if (!target_result.has_value())
+                {
+                    return std::unexpected(target_result.error());
+                }
+            }
+
+            if (has_fallthrough)
+            {
+                const auto fallthrough_result = enqueue_successor(pc + 1, next_depth);
+                if (!fallthrough_result.has_value())
+                {
+                    return std::unexpected(fallthrough_result.error());
+                }
+            }
         }
 
         return {};
     };
 
+    const auto entry_verify = verify_entry(0, 0, std::nullopt);
+    if (!entry_verify.has_value())
     {
-        const auto entry = enqueue_successor(0, 0);
-        if (!entry.has_value())
-        {
-            return std::unexpected(entry.error());
-        }
+        return std::unexpected(entry_verify.error());
     }
 
-    while (!worklist.empty())
+    for (const auto& function : program.functions)
     {
-        const std::size_t pc = worklist.back();
-        worklist.pop_back();
-
-        const Instruction& instruction = program.code[pc];
-        const std::size_t stack_depth = stack_depth_at_pc[pc].value_or(0);
-
-        std::size_t pops = 0;
-        std::size_t pushes = 0;
-        std::optional<std::size_t> explicit_target;
-        bool has_fallthrough = true;
-
-        switch (instruction.opcode)
+        const auto function_verify = verify_entry(
+            static_cast<std::size_t>(function.entry),
+            static_cast<std::size_t>(function.local_count),
+            static_cast<std::size_t>(function.local_count));
+        if (!function_verify.has_value())
         {
-            case OpCode::push_constant:
-            {
-                if (instruction.operand >= program.constants.size())
-                {
-                    return make_unexpected(
-                        ErrorCode::invalid_constant_index,
-                        "push_constant operand out of range during verification.");
-                }
-                pushes = 1;
-                break;
-            }
-            case OpCode::push_input:
-            {
-                if (instruction.operand >= available_inputs)
-                {
-                    return make_unexpected(
-                        ErrorCode::invalid_input_index,
-                        "push_input operand out of range during verification.");
-                }
-                pushes = 1;
-                break;
-            }
-            case OpCode::add_i64:
-            case OpCode::sub_i64:
-            case OpCode::mul_i64:
-            case OpCode::mod_i64:
-            case OpCode::cmp_eq_i64:
-            case OpCode::cmp_lt_i64:
-            case OpCode::and_i64:
-            case OpCode::or_i64:
-            case OpCode::xor_i64:
-            case OpCode::shl_i64:
-            case OpCode::shr_i64:
-            {
-                pops = 2;
-                pushes = 1;
-                break;
-            }
-            case OpCode::call_native:
-            {
-                if (instruction.operand >= native_bindings_.size())
-                {
-                    return make_unexpected(
-                        ErrorCode::invalid_native_index,
-                        "call_native operand out of range during verification.");
-                }
-                if (!native_bindings_[instruction.operand].function)
-                {
-                    return make_unexpected(
-                        ErrorCode::empty_native_binding,
-                        "call_native resolved to empty native binding during verification.");
-                }
-                pops = native_bindings_[instruction.operand].arity;
-                pushes = 1;
-                break;
-            }
-            case OpCode::jump:
-            {
-                explicit_target = static_cast<std::size_t>(instruction.operand);
-                has_fallthrough = false;
-                break;
-            }
-            case OpCode::jump_if_true:
-            {
-                pops = 1;
-                explicit_target = static_cast<std::size_t>(instruction.operand);
-                has_fallthrough = true;
-                break;
-            }
-            case OpCode::dup:
-            {
-                if (stack_depth == 0)
-                {
-                    return make_unexpected(
-                        ErrorCode::stack_underflow,
-                        "dup requires at least one value on stack.");
-                }
-                pushes = 1;
-                break;
-            }
-            case OpCode::pop:
-            {
-                pops = 1;
-                break;
-            }
-            case OpCode::call:
-            {
-                if (instruction.operand >= program.functions.size())
-                {
-                    return make_unexpected(
-                        ErrorCode::invalid_function_index,
-                        "call operand out of range during verification.");
-                }
-
-                const auto& function = program.functions[instruction.operand];
-                pops = function.arity;
-                pushes = 1;
-                has_fallthrough = true;
-                break;
-            }
-            case OpCode::ret:
-            {
-                pops = 1;
-                has_fallthrough = false;
-                break;
-            }
-            case OpCode::load_local:
-            {
-                pushes = 1;
-                break;
-            }
-            case OpCode::store_local:
-            {
-                pops = 1;
-                break;
-            }
-            case OpCode::halt:
-            {
-                has_fallthrough = false;
-                break;
-            }
-            default:
-            {
-                return make_unexpected(ErrorCode::unknown_opcode, "Unknown opcode during verification.");
-            }
-        }
-
-        if (stack_depth < pops)
-        {
-            return make_unexpected(
-                ErrorCode::stack_underflow,
-                "Instruction would underflow stack during verification.");
-        }
-
-        const std::size_t next_depth = (stack_depth - pops) + pushes;
-
-        if (explicit_target.has_value())
-        {
-            if (explicit_target.value() >= program.code.size())
-            {
-                return make_unexpected(
-                    ErrorCode::invalid_jump_target,
-                    "Jump target out of range during verification.");
-            }
-
-            const auto target_result = enqueue_successor(explicit_target.value(), next_depth);
-            if (!target_result.has_value())
-            {
-                return std::unexpected(target_result.error());
-            }
-        }
-
-        if (has_fallthrough)
-        {
-            const auto fallthrough_result = enqueue_successor(pc + 1, next_depth);
-            if (!fallthrough_result.has_value())
-            {
-                return std::unexpected(fallthrough_result.error());
-            }
+            return std::unexpected(function_verify.error());
         }
     }
 
@@ -1327,83 +1647,6 @@ auto VM::run_unchecked(const Program& program) -> Result<Value>
                 }
 
                 const Value& constant = program.constants[instruction.operand];
-                if (constant.is_i64() && (pc + 1) < program.code.size() && !stack_.empty())
-                {
-                    const Instruction& next_instruction = program.code[pc + 1];
-                    const std::int64_t rhs = constant.as_i64();
-                    auto lhs_result = stack_.back().expect_i64("fused_i64 lhs");
-                    if (!lhs_result.has_value())
-                    {
-                        return std::unexpected(lhs_result.error());
-                    }
-
-                    const std::int64_t lhs = lhs_result.value();
-                    std::optional<std::int64_t> fused_result;
-
-                    switch (next_instruction.opcode)
-                    {
-                        case OpCode::add_i64:
-                            fused_result = lhs + rhs;
-                            break;
-                        case OpCode::sub_i64:
-                            fused_result = lhs - rhs;
-                            break;
-                        case OpCode::mul_i64:
-                            fused_result = lhs * rhs;
-                            break;
-                        case OpCode::mod_i64:
-                            if (rhs == 0)
-                            {
-                                return make_unexpected(ErrorCode::division_by_zero, "mod_i64 divisor cannot be zero.");
-                            }
-                            fused_result = lhs % rhs;
-                            break;
-                        case OpCode::cmp_eq_i64:
-                            fused_result = lhs == rhs ? 1 : 0;
-                            break;
-                        case OpCode::cmp_lt_i64:
-                            fused_result = lhs < rhs ? 1 : 0;
-                            break;
-                        case OpCode::and_i64:
-                            fused_result = lhs & rhs;
-                            break;
-                        case OpCode::or_i64:
-                            fused_result = lhs | rhs;
-                            break;
-                        case OpCode::xor_i64:
-                            fused_result = lhs ^ rhs;
-                            break;
-                        case OpCode::shl_i64:
-                            if (rhs < 0 || rhs > 63)
-                            {
-                                return make_unexpected(
-                                    ErrorCode::invalid_shift_amount,
-                                    "shl_i64 shift amount must be in [0, 63].");
-                            }
-                            fused_result = lhs << rhs;
-                            break;
-                        case OpCode::shr_i64:
-                            if (rhs < 0 || rhs > 63)
-                            {
-                                return make_unexpected(
-                                    ErrorCode::invalid_shift_amount,
-                                    "shr_i64 shift amount must be in [0, 63].");
-                            }
-                            fused_result = lhs >> rhs;
-                            break;
-                        default:
-                            break;
-                    }
-
-                    if (fused_result.has_value())
-                    {
-                        stack_.back() = Value::i64(fused_result.value());
-                        pc += 2;
-                        advance_pc = false;
-                        break;
-                    }
-                }
-
                 stack_.push_back(constant);
                 break;
             }
@@ -1744,6 +1987,13 @@ auto VM::run_unchecked(const Program& program) -> Result<Value>
         }
     }
 
+    if (!call_frames_.empty())
+    {
+        return make_unexpected(
+            ErrorCode::missing_call_frame,
+            "Function call frame leaked at program end (missing ret).");
+    }
+
     if (stack_.empty())
     {
         return Value {};
@@ -1792,7 +2042,13 @@ auto VM::execute_add_i64() -> Result<Value>
         return std::unexpected(rhs_i64.error());
     }
 
-    return Value::i64(lhs_i64.value() + rhs_i64.value());
+    Result<std::int64_t> sum = checked_add_i64(lhs_i64.value(), rhs_i64.value());
+    if (!sum.has_value())
+    {
+        return std::unexpected(sum.error());
+    }
+
+    return Value::i64(sum.value());
 }
 
 auto VM::execute_sub_i64() -> Result<Value>
@@ -1823,7 +2079,13 @@ auto VM::execute_sub_i64() -> Result<Value>
         return std::unexpected(rhs_i64.error());
     }
 
-    return Value::i64(lhs_i64.value() - rhs_i64.value());
+    Result<std::int64_t> difference = checked_sub_i64(lhs_i64.value(), rhs_i64.value());
+    if (!difference.has_value())
+    {
+        return std::unexpected(difference.error());
+    }
+
+    return Value::i64(difference.value());
 }
 
 auto VM::execute_mul_i64() -> Result<Value>
@@ -1854,7 +2116,13 @@ auto VM::execute_mul_i64() -> Result<Value>
         return std::unexpected(rhs_i64.error());
     }
 
-    return Value::i64(lhs_i64.value() * rhs_i64.value());
+    Result<std::int64_t> product = checked_mul_i64(lhs_i64.value(), rhs_i64.value());
+    if (!product.has_value())
+    {
+        return std::unexpected(product.error());
+    }
+
+    return Value::i64(product.value());
 }
 
 auto VM::execute_mod_i64() -> Result<Value>
@@ -1884,12 +2152,13 @@ auto VM::execute_mod_i64() -> Result<Value>
     {
         return std::unexpected(rhs_i64.error());
     }
-    if (rhs_i64.value() == 0)
+    Result<std::int64_t> remainder = checked_mod_i64(lhs_i64.value(), rhs_i64.value());
+    if (!remainder.has_value())
     {
-        return make_unexpected(ErrorCode::division_by_zero, "mod_i64 divisor cannot be zero.");
+        return std::unexpected(remainder.error());
     }
 
-    return Value::i64(lhs_i64.value() % rhs_i64.value());
+    return Value::i64(remainder.value());
 }
 
 auto VM::execute_cmp_eq_i64() -> Result<Value>
@@ -2074,12 +2343,13 @@ auto VM::execute_shl_i64() -> Result<Value>
     {
         return std::unexpected(rhs_i64.error());
     }
-    if (rhs_i64.value() < 0 || rhs_i64.value() > 63)
+    Result<std::int64_t> shifted = checked_shl_i64(lhs_i64.value(), rhs_i64.value());
+    if (!shifted.has_value())
     {
-        return make_unexpected(ErrorCode::invalid_shift_amount, "shl_i64 shift amount must be in [0, 63].");
+        return std::unexpected(shifted.error());
     }
 
-    return Value::i64(lhs_i64.value() << rhs_i64.value());
+    return Value::i64(shifted.value());
 }
 
 auto VM::execute_shr_i64() -> Result<Value>
@@ -2109,12 +2379,13 @@ auto VM::execute_shr_i64() -> Result<Value>
     {
         return std::unexpected(rhs_i64.error());
     }
-    if (rhs_i64.value() < 0 || rhs_i64.value() > 63)
+    Result<std::int64_t> shifted = checked_shr_i64(lhs_i64.value(), rhs_i64.value());
+    if (!shifted.has_value())
     {
-        return make_unexpected(ErrorCode::invalid_shift_amount, "shr_i64 shift amount must be in [0, 63].");
+        return std::unexpected(shifted.error());
     }
 
-    return Value::i64(lhs_i64.value() >> rhs_i64.value());
+    return Value::i64(shifted.value());
 }
 
 auto VM::execute_call_native(std::size_t binding_index) -> Result<Value>
@@ -2130,20 +2401,45 @@ auto VM::execute_call_native(std::size_t binding_index) -> Result<Value>
         return make_unexpected(ErrorCode::empty_native_binding, "Native function binding is empty.");
     }
 
-    if (stack_.size() < binding.arity)
+    const std::size_t binding_arity = binding.arity;
+    if (stack_.size() < binding_arity)
     {
         return make_unexpected(
             ErrorCode::insufficient_native_arguments,
             "call_native does not have enough stack arguments.");
     }
 
-    const std::size_t args_offset = stack_.size() - binding.arity;
-    std::span<Value> args(stack_.data() + args_offset, binding.arity);
+    const std::size_t args_offset = stack_.size() - binding_arity;
+    std::span<Value> args(stack_.data() + args_offset, binding_arity);
+
+    const std::uint64_t generation_before = native_bindings_generation_;
+    struct NativeDispatchGuard final
+    {
+        explicit NativeDispatchGuard(VM& owner)
+            : vm(owner)
+        {
+            ++vm.native_dispatch_depth_;
+        }
+
+        ~NativeDispatchGuard()
+        {
+            --vm.native_dispatch_depth_;
+        }
+
+        VM& vm;
+    };
+    NativeDispatchGuard dispatch_guard(*this);
 
     Result<Value> result = binding.function(*this, args);
     if (!result.has_value())
     {
         return std::unexpected<Error> {result.error()};
+    }
+    if (native_bindings_generation_ != generation_before)
+    {
+        return make_unexpected(
+            ErrorCode::native_reentrancy,
+            "Native bindings were modified during native callback dispatch.");
     }
 
     stack_.resize(args_offset);

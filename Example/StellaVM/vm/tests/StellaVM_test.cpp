@@ -2,9 +2,11 @@
 
 import vm;
 
+#include <algorithm>
 #include <cstddef>
 #include <span>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <vector>
 #include <utility>
@@ -659,6 +661,11 @@ TEST_CASE("property arithmetic differentials match host reference")
         {
             rhs = static_cast<std::int64_t>(next_random(state) % 64ULL);
         }
+        if (op == 9)
+        {
+            lhs = static_cast<std::int64_t>(next_random(state) % 1'000'000ULL);
+            rhs = static_cast<std::int64_t>(next_random(state) % 20ULL);
+        }
 
         Program program;
         const auto c_lhs = static_cast<std::uint32_t>(program.add_constant(Value::i64(lhs)));
@@ -710,7 +717,20 @@ TEST_CASE("property arithmetic differentials match host reference")
                 break;
             case 10:
                 opcode = OpCode::shr_i64;
-                expected = lhs >> rhs;
+                if (rhs == 0)
+                {
+                    expected = lhs;
+                }
+                else if (lhs >= 0)
+                {
+                    expected = static_cast<std::int64_t>(static_cast<std::uint64_t>(lhs) >> rhs);
+                }
+                else
+                {
+                    const auto shifted = static_cast<std::uint64_t>(lhs) >> rhs;
+                    const auto sign_mask = (~std::uint64_t {0}) << (64 - rhs);
+                    expected = static_cast<std::int64_t>(shifted | sign_mask);
+                }
                 break;
             default:
                 FAIL("Unexpected opcode selector");
@@ -761,4 +781,129 @@ TEST_CASE("bytecode parser rejects invalid magic")
     const auto decoded = deserialize_program(bytes.bytes());
     REQUIRE(!decoded.has_value());
     CHECK(decoded.error().code == ErrorCode::invalid_bytecode_magic);
+}
+
+TEST_CASE("verifier rejects top-level frame opcodes")
+{
+    using namespace stella::vm;
+
+    VM vm;
+    Program program;
+    program.code = {
+        {OpCode::load_local, 0},
+        {OpCode::halt, 0},
+    };
+
+    const auto verify = vm.verify(program, 0);
+    REQUIRE(!verify.has_value());
+    CHECK(verify.error().code == ErrorCode::missing_call_frame);
+}
+
+TEST_CASE("verifier validates function bodies even when not called")
+{
+    using namespace stella::vm;
+
+    VM vm;
+    Program program;
+    (void)program.add_function(1, 1, 1);
+
+    program.code = {
+        {OpCode::halt, 0},
+        {OpCode::load_local, 1},
+        {OpCode::ret, 0},
+    };
+
+    const auto verify = vm.verify(program, 0);
+    REQUIRE(!verify.has_value());
+    CHECK(verify.error().code == ErrorCode::invalid_local_index);
+}
+
+TEST_CASE("arithmetic overflow returns explicit error")
+{
+    using namespace stella::vm;
+
+    VM vm;
+    Program program;
+    const auto max_v = static_cast<std::uint32_t>(
+        program.add_constant(Value::i64((std::numeric_limits<std::int64_t>::max)())));
+    const auto one = static_cast<std::uint32_t>(program.add_constant(Value::i64(1)));
+    program.code = {
+        {OpCode::push_constant, max_v},
+        {OpCode::push_constant, one},
+        {OpCode::add_i64, 0},
+        {OpCode::halt, 0},
+    };
+
+    const auto result = vm.run(program);
+    REQUIRE(!result.has_value());
+    CHECK(result.error().code == ErrorCode::arithmetic_overflow);
+}
+
+TEST_CASE("native reentrancy mutation is rejected during dispatch")
+{
+    using namespace stella::vm;
+
+    VM vm;
+    const auto mutator = static_cast<std::uint32_t>(vm.native("mutator").bind([](VM& host_vm) -> std::int64_t {
+        (void)host_vm.bind_native("late", 0, [](VM&, std::span<Value>) -> Result<Value> {
+            return Value::i64(7);
+        });
+        return 1;
+    }));
+
+    Program program;
+    program.code = {
+        {OpCode::call_native, mutator},
+        {OpCode::halt, 0},
+    };
+
+    const auto result = vm.run_unchecked(program);
+    REQUIRE(!result.has_value());
+    CHECK(result.error().code == ErrorCode::native_reentrancy);
+}
+
+TEST_CASE("bytecode parser rejects reserved header bits")
+{
+    using namespace stella::vm;
+
+    MoveBuffer bytes(20);
+    auto view = bytes.bytes();
+    std::fill(view.begin(), view.end(), std::byte {0});
+    view[0] = std::byte {0x4D};
+    view[1] = std::byte {0x56};
+    view[2] = std::byte {0x54};
+    view[3] = std::byte {0x53};
+    view[4] = std::byte {0x01};
+    view[5] = std::byte {0x00};
+    view[6] = std::byte {0x01}; // reserved != 0
+    view[7] = std::byte {0x00};
+
+    const auto decoded = deserialize_program(bytes.bytes());
+    REQUIRE(!decoded.has_value());
+    CHECK(decoded.error().code == ErrorCode::malformed_bytecode);
+}
+
+TEST_CASE("bytecode parser rejects excessive instruction count")
+{
+    using namespace stella::vm;
+
+    MoveBuffer bytes(20);
+    auto view = bytes.bytes();
+    std::fill(view.begin(), view.end(), std::byte {0});
+    view[0] = std::byte {0x4D};
+    view[1] = std::byte {0x56};
+    view[2] = std::byte {0x54};
+    view[3] = std::byte {0x53};
+    view[4] = std::byte {0x01};
+    view[5] = std::byte {0x00};
+    view[6] = std::byte {0x00};
+    view[7] = std::byte {0x00};
+    view[8] = std::byte {0x41}; // 1'000'001 little-endian
+    view[9] = std::byte {0x42};
+    view[10] = std::byte {0x0F};
+    view[11] = std::byte {0x00};
+
+    const auto decoded = deserialize_program(bytes.bytes());
+    REQUIRE(!decoded.has_value());
+    CHECK(decoded.error().code == ErrorCode::bytecode_limit_exceeded);
 }

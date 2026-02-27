@@ -67,6 +67,12 @@ auto error_code_name(const ErrorCode code) -> const char*
             return "unsupported_bytecode_version";
         case ErrorCode::malformed_bytecode:
             return "malformed_bytecode";
+        case ErrorCode::arithmetic_overflow:
+            return "arithmetic_overflow";
+        case ErrorCode::native_reentrancy:
+            return "native_reentrancy";
+        case ErrorCode::bytecode_limit_exceeded:
+            return "bytecode_limit_exceeded";
     }
     return "unknown";
 }
