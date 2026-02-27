@@ -157,6 +157,44 @@ public class PackageRegistry
 
         Register(new PackageEntry
         {
+            Name = "luajit",
+            Strategy = "find_package",
+            FindPackageName = "LuaJIT",
+            FindPackageConfigMode = false,
+            CmakeTargets =
+            [
+                "$<TARGET_NAME_IF_EXISTS:LuaJIT::LuaJIT>",
+                "$<TARGET_NAME_IF_EXISTS:luajit::luajit>",
+                "$<TARGET_NAME_IF_EXISTS:unofficial::luajit::luajit>",
+                "${LUAJIT_LIBRARIES}",
+                "${LUAJIT_LIBRARY}",
+            ],
+            Description = "LuaJIT runtime/C API (uses installed package manager or system install)",
+        });
+        RegisterAlias("lua_jit", "luajit");
+
+        Register(new PackageEntry
+        {
+            Name = "sol2",
+            GitRepository = "https://github.com/ThePhD/sol2.git",
+            GitTag = "v3.3.0",
+            Strategy = "header_inject",
+            CmakeTargets = ["sol2::sol2"],
+            IncludeDirs = ["include"],
+            Variants = new Dictionary<string, PackageVariant>(KeyComparer)
+            {
+                ["luajit"] = new PackageVariant
+                {
+                    Dependencies = ["luajit"],
+                },
+            },
+            Description = "Header-only C++ bindings for Lua",
+        });
+        RegisterAlias("sol", "sol2");
+        RegisterAlias("sol3", "sol2");
+
+        Register(new PackageEntry
+        {
             Name = "fmt",
             GitRepository = "https://github.com/fmtlib/fmt.git",
             GitTag = "11.1.4",

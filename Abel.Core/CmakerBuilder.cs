@@ -570,6 +570,17 @@ public class CmakeBuilder
         {
             builder.AddFetchContent(package.Name, package.GitRepository, package.GitTag);
         }
+        else if (strategy.Equals("find_package", StringComparison.OrdinalIgnoreCase))
+        {
+            var findPackageName = string.IsNullOrWhiteSpace(package.FindPackageName)
+                ? package.Name
+                : package.FindPackageName.Trim();
+
+            builder.AddFindPackage(
+                findPackageName,
+                required: true,
+                configMode: package.FindPackageConfigMode);
+        }
         else if (strategy.Equals("wrapper", StringComparison.OrdinalIgnoreCase))
         {
             var sources = ResolveLayer(package.CoreSources, package.Sources, variant?.Sources);

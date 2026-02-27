@@ -56,9 +56,24 @@ public class PackageEntry
     ///   fetchcontent  normal FetchContent_MakeAvailable
     ///   wrapper       FetchContent_Populate + Abel-generated CMake target
     ///   header_inject FetchContent_Populate + INTERFACE include target
+    ///   find_package  find_package(...) + link declared cmake_targets
     /// </summary>
     [JsonPropertyName("strategy")]
     public string Strategy { get; set; } = "fetchcontent";
+
+    /// <summary>
+    /// Optional CMake package name for strategy=find_package.
+    /// Defaults to Name when empty.
+    /// </summary>
+    [JsonPropertyName("find_package_name")]
+    public string FindPackageName { get; set; } = "";
+
+    /// <summary>
+    /// For strategy=find_package: when true emits find_package(... CONFIG REQUIRED).
+    /// When false emits find_package(... REQUIRED) and allows module mode fallback.
+    /// </summary>
+    [JsonPropertyName("find_package_config_mode")]
+    public bool FindPackageConfigMode { get; set; } = true;
 
     /// <summary>
     /// For wrapper/header_inject: source files relative to fetched source root.
