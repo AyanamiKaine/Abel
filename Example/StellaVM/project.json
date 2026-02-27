@@ -1,0 +1,14 @@
+{
+  "name": "StellaVM",
+  "cxx_standard": 23,
+  "output_type": "exe",
+  "sources": {},
+  "dependencies": [
+    "vm"
+  ],
+  "tests": {
+    "files": [
+      "tests/StellaVM_test.cpp"
+    ]
+  }
+}

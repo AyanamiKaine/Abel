@@ -1,0 +1,19 @@
+{
+  "name": "vm",
+  "cxx_standard": 23,
+  "output_type": "library",
+  "sources": {
+    "modules": [
+      "src/vm.cppm"
+    ],
+    "private": [
+      "src/vm_impl.cpp"
+    ]
+  },
+  "dependencies": [],
+  "tests": {
+    "files": [
+      "tests/StellaVM_test.cpp"
+    ]
+  }
+}
