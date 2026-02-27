@@ -116,6 +116,47 @@ public class PackageRegistry
 
         Register(new PackageEntry
         {
+            Name = "sdl3pp",
+            GitRepository = "https://github.com/talesm/SDL3pp.git",
+            GitTag = "0.7.3",
+            Strategy = "fetchcontent",
+            CmakeTargets = ["SDL3pp::SDL3pp"],
+            Dependencies = ["sdl3"],
+            Description = "Modern C++ wrapper around SDL3",
+        });
+        RegisterAlias("sdk3pp", "sdl3pp");
+
+        Register(new PackageEntry
+        {
+            Name = "sqlitecpp",
+            GitRepository = "https://github.com/SRombauts/SQLiteCpp.git",
+            GitTag = "master",
+            Strategy = "fetchcontent",
+            CmakeTargets = ["SQLiteCpp"],
+            CmakeOptions = new Dictionary<string, string>(KeyComparer)
+            {
+                ["SQLITECPP_BUILD_EXAMPLES"] = "OFF",
+                ["SQLITECPP_BUILD_TESTS"] = "OFF",
+                ["SQLITECPP_INTERNAL_SQLITE"] = "ON",
+            },
+            Description = "Lean C++ SQLite3 wrapper (RAII, exceptions)",
+        });
+        RegisterAlias("sqlitec++", "sqlitecpp");
+
+        Register(new PackageEntry
+        {
+            Name = "sqlite_orm",
+            GitRepository = "https://github.com/fnc12/sqlite_orm.git",
+            GitTag = "master",
+            Strategy = "fetchcontent",
+            CmakeTargets = ["sqlite_orm::sqlite_orm"],
+            Description = "Header-only modern C++ ORM for SQLite",
+        });
+        RegisterAlias("sqlite-orm", "sqlite_orm");
+        RegisterAlias("sqliteorm", "sqlite_orm");
+
+        Register(new PackageEntry
+        {
             Name = "fmt",
             GitRepository = "https://github.com/fmtlib/fmt.git",
             GitTag = "11.1.4",
