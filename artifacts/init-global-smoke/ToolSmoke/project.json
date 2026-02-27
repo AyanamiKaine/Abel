@@ -1,6 +1,0 @@
-{
-  "name": "ToolSmoke",
-  "output_type": "exe",
-  "cxx_standard": 23,
-  "dependencies": []
-}
